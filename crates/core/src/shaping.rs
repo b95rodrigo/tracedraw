@@ -151,7 +151,14 @@ fn simple_closed_contour(path: &BezPath) -> Option<Vec<[f64; 2]>> {
     {
         return None;
     }
-    let finite = |p: Point| p.x.is_finite() && p.y.is_finite();
+    // Bound the fast path to a realistic mm coordinate range. This keeps
+    // squared-distance and signed-area checks numerically meaningful.
+    let finite = |p: Point| {
+        p.x.is_finite()
+            && p.y.is_finite()
+            && p.x.abs() <= 1_000_000.0
+            && p.y.abs() <= 1_000_000.0
+    };
     if !els.iter().all(|el| match *el {
         PathEl::MoveTo(p) | PathEl::LineTo(p) => finite(p),
         PathEl::QuadTo(a, b) => finite(a) && finite(b),
@@ -1472,6 +1479,33 @@ mod tests {
         assert!(overlay(&inner, &outer, Op::Trim).elements().is_empty());
         let reverse_exclude = overlay(&inner, &outer, Op::Exclude);
         assert!((reverse_exclude.area().abs() - diff_area).abs() < 1e-3);
+    }
+
+    #[test]
+    fn opposite_winding_on_a_nested_cut_still_produces_a_hole() {
+        use crate::geometry::Shape as _;
+        let outer = crate::geometry::Circle::new((0.0, 0.0), 30.0).to_path(0.01);
+        let inner = crate::geometry::Circle::new((0.0, 0.0), 6.0).to_path(0.01);
+        let opposite = reverse_closed_contour(&inner).expect("simple closed curve");
+        let trim = overlay(&outer, &opposite, Op::Trim);
+        assert!(!trim.contains(Point::new(0.0, 0.0)));
+        assert!(trim.contains(Point::new(15.0, 0.0)));
+        assert!((trim.area().abs() - (outer.area().abs() - inner.area().abs())).abs() < 1e-3);
+        assert!(trim.elements().iter().any(|e| matches!(e, PathEl::CurveTo(_, _, _))));
+    }
+
+    #[test]
+    fn exact_curve_detection_rejects_invalid_control_points() {
+        let mut invalid = BezPath::new();
+        invalid.move_to((0.0, 0.0));
+        invalid.curve_to(
+            Point::new(f64::NAN, 0.0),
+            Point::new(1.0, 2.0),
+            Point::new(2.0, 0.0),
+        );
+        invalid.line_to((0.0, 1.0));
+        invalid.close_path();
+        assert!(simple_closed_contour(&invalid).is_none());
     }
 
     #[test]
