@@ -6,7 +6,9 @@ checked screenshot behind it.
 "partial" names what is missing. "baked" means the result is applied once
 instead of staying live and editable. The goal is every row at "works".
 
-Counts: works 189, partial 6 (`.cdr` content coverage; CMX import; print preview; print merge; colour styles; Find and Replace), missing 1 (system windows), not applicable 4, icons close but not pixel-identical.
+Counts: works 215, partial 5 (`.cdr` content coverage; `.cdr` writing; CMX import; colour styles; Find and Replace), missing 1 (system windows), not applicable 4. Icons are a separate visual assessment, not counted as a feature.
+
+These are self-reported implementation statuses, not a validated compatibility score. See `compatibility-matrix.md` for evidence requirements and independently verified workflows. The CI inventory check in `scripts/ci/check_feature_status.py` keeps these counts in sync with the rows below.
 
 ## 1. Selection and navigation
 
