@@ -14,7 +14,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 FEATURES = ROOT / "docs" / "features.md"
 COUNTS = re.compile(
-    r"^Counts: works (\d+), partial (\d+) .*?, missing (\d+), not applicable (\d+),",
+    r"^Counts: works (\d+), partial (\d+) .*?, missing (\d+), not applicable (\d+)(?:[.,]|$)",
     re.MULTILINE,
 )
 STATUS = (
