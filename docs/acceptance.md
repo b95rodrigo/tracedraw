@@ -1,12 +1,18 @@
 # Acceptance criteria
 
-Each criterion is a test in the workspace (or will be, with the test name
-given). A feature is accepted when its criteria pass in CI on all three
-platforms.
+Each criterion below is either an existing test or a planned acceptance
+gate. A feature is accepted only after its actual check passes; the
+existence of a documented criterion is not proof that CI runs it.
+See [compatibility-matrix.md](compatibility-matrix.md) for independently
+verified workflows and the distinction between claimed and tested coverage.
 
 ## Visual regression
 
-- Reference PNGs live in `tests/visual/expected/`; `tests/visual` renders
+**Planned, not yet enforced:** the `tests/visual/expected/` directory and
+`tests/visual` harness are not present in the 2026-10-21 repository tree.
+The following criteria describe the gate that must be implemented.
+
+- Reference PNGs will live in `tests/visual/expected/`; `tests/visual` will render
   each `.tdraw` fixture at 96 dpi and compares.
 - Metric: per-pixel RMSE over RGB, normalised to 0..1. Threshold 0.01
   (1%) per image, and no more than 0.5% of pixels differing by more than
@@ -20,8 +26,9 @@ platforms.
 - `.tdraw`: save, load, compare the `Document` structurally (serde
   equality). Every command variant has a round-trip fixture.
 - `.cdr`: open a fixture, export `.tdraw`, re-open, compare object count,
-  bounding boxes (0.01 mm), fill and outline attributes. Fixtures per
-  version in `tests/cdr/`.
+  bounding boxes (0.01 mm), fill and outline attributes. The proposed per-version fixture directory is
+  `tests/cdr/`, which is not present yet. Existing CDR writing tests are
+  in `crates/cdr/src/write/tests.rs`.
 - SVG and PDF: export, rasterise with an independent tool (resvg for
   SVG, pdftoppm for PDF, both in CI), compare to our render with the
   visual metric at 2% threshold.
@@ -90,3 +97,19 @@ than 20%.
   it draws; tests in `crates/cdr/src/write/tests.rs`); truncated and
   bit-flipped copies of written files of versions 7, 12, 13, 15 and 21
   never panic the reader.
+
+## CI execution scope (2026-10-21)
+
+The legacy `test` job ran only non-application workspace crates and
+excluded `tracedraw`. The application includes in-crate interactive and UI
+tests. The build workflow must now run those app tests under a virtual
+X11 display, with the Linux GUI build dependencies installed, before
+publishing release artifacts.
+
+The inventory check `scripts/ci/check_feature_status.py` validates the
+self-reported table counts; it does not validate product behavior. The
+independent visual and performance harnesses above remain future work.
+
+Windows and macOS release builds are not equivalent to running each
+platform's interaction tests. Platform-specific tests and real-machine
+checks remain necessary before declaring cross-platform verification.
