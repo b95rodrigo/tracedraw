@@ -24,7 +24,7 @@ features.md says `works`. Do not infer percentages from the inventory totals.
 
 | ID | Priority | Workflow | Required verification | Current evidence |
 |---|---|---|---|---|
-| VEC-01 | P0 | Union, trim, intersection of curves | Preserve editable cubic segments, small node count, holes and correct topology | **Open**: `crates/core/src/shaping.rs` flattens curves to polylines |
+| VEC-01 | P0 | Union, trim, intersection of curves | Preserve editable cubic segments, small node count, holes and correct topology | **In progress**: simple separated/nested shapes preserve original curves; crossings and complex paths still flatten |
 | VEC-02 | P0 | Select, move, resize and rotate grouped objects | Pointer/keyboard modifiers, nesting, correct hit testing and a single undo step | **Open**: interaction reports need reproduction |
 | VEC-03 | P0 | Edit a clipping frame and its contents | Frame styling, selection and edits inside the frame, undo and save | **Open**: real-file/browser issue |
 | VEC-04 | P0 | Pan, zoom and select on a dense document | Benchmark p50/p95 for navigation and render latency, on-screen correctness | **Open**: reported slow interactions |
@@ -72,8 +72,11 @@ without an error.
 
 ## Baseline from 2026-10-21
 
-- The inventory has 215 `works` rows, five `partial` rows, one
-  `missing` row and four `not applicable` rows, plus an icon assessment.
+- The inventory was initially recorded as 215 `works` rows and five
+  `partial` rows. The shaping row was subsequently reclassified as partial
+  to reflect the unresolved curve-flattening limitation: the current
+  inventory is 214 `works`, six `partial`, one `missing` and four
+  `not applicable` rows, plus an icon assessment.
 - These numbers describe *declared* coverage, not independent verification.
 - The external `.cdr` coverage remains partial by the inventory's own
   admission. Older-format writing and many newer effects need fixture checks.

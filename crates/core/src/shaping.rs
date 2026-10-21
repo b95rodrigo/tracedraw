@@ -1,7 +1,7 @@
 //! Shaping: weld, trim, intersect, simplify, front-minus-back, back-minus-
-//! front and boundary. Implemented on flattened polygons with i_overlay,
-//! so curves become dense polylines (0.02 mm tolerance). A curve-preserving
-//! version is on the roadmap.
+//! front and boundary. Clearly separated or nested simple closed paths
+//! retain their original curves. Crossing/complex paths still use flattened
+//! polygons (0.02 mm tolerance); a general curve-aware solver is planned.
 
 use crate::geometry::{BezPath, PathEl, Point};
 use i_overlay::core::fill_rule::FillRule as IFill;
@@ -65,8 +65,261 @@ fn from_shapes(shapes: Vec<Vec<Vec<[f64; 2]>>>) -> BezPath {
     path
 }
 
+/// Join separate paths without replacing their original control points.
+fn join_exact_paths(paths: &[BezPath]) -> BezPath {
+    let mut out = BezPath::new();
+    for path in paths {
+        for el in path.elements() {
+            out.push(*el);
+        }
+    }
+    out
+}
+
+/// Euclidean distance from a point to a chord, squared.
+fn point_chord_distance_sq(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len_sq = dx * dx + dy * dy;
+    let t = (if len_sq > 1e-24 {
+        ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq
+    } else {
+        0.0
+    })
+    .clamp(0.0, 1.0);
+    let x = a[0] + dx * t - p[0];
+    let y = a[1] + dy * t - p[1];
+    x * x + y * y
+}
+
+fn chord_side(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+}
+
+/// True when two polygonal chords cross or are too close to trust the
+/// flattened geometry. A bounding-box test alone rejects safe diagonal
+/// segments, so check the actual chord distance when the boxes overlap.
+/// Flattening uses TOL per input path: require 2*TOL clearance.
+fn chord_bounds_near(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
+    let gap = 2.0 * TOL + 1e-7;
+    let (ax0, ax1) = (a[0].min(b[0]), a[0].max(b[0]));
+    let (ay0, ay1) = (a[1].min(b[1]), a[1].max(b[1]));
+    let (bx0, bx1) = (c[0].min(d[0]), c[0].max(d[0]));
+    let (by0, by1) = (c[1].min(d[1]), c[1].max(d[1]));
+    if ax0 > bx1 + gap
+        || bx0 > ax1 + gap
+        || ay0 > by1 + gap
+        || by0 > ay1 + gap
+    {
+        return false;
+    }
+
+    let ab_c = chord_side(a, b, c);
+    let ab_d = chord_side(a, b, d);
+    let cd_a = chord_side(c, d, a);
+    let cd_b = chord_side(c, d, b);
+    if (ab_c > 0.0 && ab_d < 0.0 || ab_c < 0.0 && ab_d > 0.0)
+        && (cd_a > 0.0 && cd_b < 0.0 || cd_a < 0.0 && cd_b > 0.0)
+    {
+        return true;
+    }
+
+    let gap_sq = gap * gap;
+    point_chord_distance_sq(a, c, d) <= gap_sq
+        || point_chord_distance_sq(b, c, d) <= gap_sq
+        || point_chord_distance_sq(c, a, b) <= gap_sq
+        || point_chord_distance_sq(d, a, b) <= gap_sq
+}
+
+fn signed_polygon_area(contour: &[[f64; 2]]) -> f64 {
+    contour
+        .iter()
+        .zip(contour.iter().cycle().skip(1))
+        .map(|(p, q)| p[0] * q[1] - q[0] * p[1])
+        .sum::<f64>()
+        / 2.0
+}
+
+/// Permit only one finite, simple, closed contour. Multi-contour and
+/// self-intersecting paths keep using the general polygon overlay algorithm.
+fn simple_closed_contour(path: &BezPath) -> Option<Vec<[f64; 2]>> {
+    let els = path.elements();
+    if !matches!(els.first(), Some(PathEl::MoveTo(_)))
+        || !matches!(els.last(), Some(PathEl::ClosePath))
+        || els.iter().filter(|el| matches!(el, PathEl::MoveTo(_))).count() != 1
+        || els.iter().filter(|el| matches!(el, PathEl::ClosePath)).count() != 1
+    {
+        return None;
+    }
+    // Bound the fast path to a realistic mm coordinate range. This keeps
+    // squared-distance and signed-area checks numerically meaningful.
+    let finite = |p: Point| {
+        p.x.is_finite()
+            && p.y.is_finite()
+            && p.x.abs() <= 1_000_000.0
+            && p.y.abs() <= 1_000_000.0
+    };
+    if !els.iter().all(|el| match *el {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => finite(p),
+        PathEl::QuadTo(a, b) => finite(a) && finite(b),
+        PathEl::CurveTo(a, b, c) => finite(a) && finite(b) && finite(c),
+        PathEl::ClosePath => true,
+    }) {
+        return None;
+    }
+    let mut all = contours(path);
+    if all.len() != 1 {
+        return None;
+    }
+    let mut contour = all.pop()?;
+    if let (Some(first), Some(last)) = (contour.first(), contour.last()) {
+        if (first[0] - last[0]).abs() <= 1e-9
+            && (first[1] - last[1]).abs() <= 1e-9
+        {
+            contour.pop();
+        }
+    }
+    let n = contour.len();
+    // Keep this conservative fast path inexpensive for high-node artwork.
+    if !(3..=512).contains(&n) || signed_polygon_area(&contour).abs() <= 1e-8 {
+        return None;
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            // Adjacent chords share endpoints, including the closing seam.
+            if j == i + 1 || (i == 0 && j == n - 1) {
+                continue;
+            }
+            if chord_bounds_near(
+                contour[i],
+                contour[(i + 1) % n],
+                contour[j],
+                contour[(j + 1) % n],
+            ) {
+                return None;
+            }
+        }
+    }
+    Some(contour)
+}
+
+fn polygon_contains(contour: &[[f64; 2]], point: [f64; 2]) -> bool {
+    let mut inside = false;
+    for (a, b) in contour.iter().zip(contour.iter().cycle().skip(1)) {
+        if (a[1] > point[1]) != (b[1] > point[1])
+            && point[0] < a[0] + (point[1] - a[1]) * (b[0] - a[0]) / (b[1] - a[1])
+        {
+            inside = !inside;
+        }
+    }
+    inside
+}
+
+fn reverse_closed_contour(path: &BezPath) -> Option<BezPath> {
+    let subpaths = subpath_segments(path);
+    let (segs, closed) = subpaths.first()?;
+    if subpaths.len() != 1 || !*closed {
+        return None;
+    }
+    let mut out = BezPath::new();
+    out.move_to(segs.last()?.end());
+    for seg in segs.iter().rev() {
+        match seg {
+            kurbo::PathSeg::Line(line) => out.line_to(line.p0),
+            kurbo::PathSeg::Quad(quad) => out.quad_to(quad.p1, quad.p0),
+            kurbo::PathSeg::Cubic(cubic) => {
+                out.curve_to(cubic.p2, cubic.p1, cubic.p0);
+            }
+        }
+    }
+    out.close_path();
+    Some(out)
+}
+
+/// A nested difference is a compound path. Reverse the inner boundary when
+/// needed so both even-odd and non-zero fill rules recognise the hole.
+fn exact_hole(
+    outer: &BezPath,
+    inner: &BezPath,
+    outer_poly: &[[f64; 2]],
+    inner_poly: &[[f64; 2]],
+) -> Option<BezPath> {
+    let inner = if signed_polygon_area(outer_poly).signum()
+        == signed_polygon_area(inner_poly).signum()
+    {
+        reverse_closed_contour(inner)?
+    } else {
+        inner.clone()
+    };
+    Some(join_exact_paths(&[outer.clone(), inner]))
+}
+
+/// Retain exact cubic control points when two uncomplicated closed paths
+/// have a clear gap, or one lies strictly inside the other. This does not
+/// replace the polygon algorithm for crossing, touching or complex paths.
+fn exact_non_crossing_parts(
+    subject: &BezPath,
+    clip: &BezPath,
+    op: Op,
+) -> Option<Vec<BezPath>> {
+    use crate::geometry::Shape as _;
+    let margin = 2.0 * TOL + 1e-7;
+    let sb = subject.bounding_box();
+    let cb = clip.bounding_box();
+    let separate = sb.x1 + margin < cb.x0
+        || cb.x1 + margin < sb.x0
+        || sb.y1 + margin < cb.y0
+        || cb.y1 + margin < sb.y0;
+    // Overlapping bounds do not imply touching curves: two diagonally
+    // separated shapes can share an axis-aligned bounding rectangle.
+    // Validate actual chord clearance before classifying their topology.
+    let a = simple_closed_contour(subject)?;
+    let b = simple_closed_contour(clip)?;
+    if !separate {
+        for i in 0..a.len() {
+            for j in 0..b.len() {
+                if chord_bounds_near(
+                    a[i],
+                    a[(i + 1) % a.len()],
+                    b[j],
+                    b[(j + 1) % b.len()],
+                ) {
+                    return None;
+                }
+            }
+        }
+    }
+    let subject_inside = !separate && polygon_contains(&b, a[0]);
+    let clip_inside = !separate && polygon_contains(&a, b[0]);
+    if subject_inside && clip_inside {
+        return None;
+    }
+    match (subject_inside, clip_inside, op) {
+        (false, false, Op::Weld | Op::Exclude) => {
+            Some(vec![subject.clone(), clip.clone()])
+        }
+        (false, false, Op::Trim) => Some(vec![subject.clone()]),
+        (false, false, Op::Intersect) => Some(Vec::new()),
+        (true, false, Op::Weld) => Some(vec![clip.clone()]),
+        (true, false, Op::Intersect) => Some(vec![subject.clone()]),
+        (true, false, Op::Trim) => Some(Vec::new()),
+        (true, false, Op::Exclude) => {
+            Some(vec![exact_hole(clip, subject, &b, &a)?])
+        }
+        (false, true, Op::Weld) => Some(vec![subject.clone()]),
+        (false, true, Op::Intersect) => Some(vec![clip.clone()]),
+        (false, true, Op::Trim | Op::Exclude) => {
+            Some(vec![exact_hole(subject, clip, &a, &b)?])
+        }
+        _ => None,
+    }
+}
+
 /// Combine `subject` and `clip` (both in the same coordinate space).
 pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
+    if let Some(parts) = exact_non_crossing_parts(subject, clip, op) {
+        return join_exact_paths(&parts);
+    }
     let subj = contours(subject);
     let clp = contours(clip);
     let rule = match op {
@@ -82,6 +335,9 @@ pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
 /// Combine `subject` and `clip` as [`overlay`] does, each separate piece
 /// of the result (its outline with its holes) a path of its own.
 pub fn overlay_parts(subject: &BezPath, clip: &BezPath, op: Op) -> Vec<BezPath> {
+    if let Some(parts) = exact_non_crossing_parts(subject, clip, op) {
+        return parts;
+    }
     let subj = contours(subject);
     let clp = contours(clip);
     let rule = match op {
@@ -1139,6 +1395,128 @@ mod tests {
         let b = w.bounding_box();
         assert!((b.x0 - 0.0).abs() < 1e-6 && (b.x1 - 15.0).abs() < 1e-6);
         assert!((w.area().abs() - 150.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn separate_cubic_paths_keep_original_control_points() {
+        use crate::geometry::Shape as _;
+        let left = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let right = crate::geometry::Circle::new((40.0, 0.0), 10.0).to_path(0.01);
+        let weld = overlay(&left, &right, Op::Weld);
+        let expected = join_exact_paths(&[left.clone(), right.clone()]);
+        assert_eq!(weld.elements(), expected.elements());
+        assert_eq!(overlay_parts(&left, &right, Op::Weld).len(), 2);
+        assert_eq!(overlay_parts(&left, &right, Op::Exclude).len(), 2);
+        assert!(overlay(&left, &right, Op::Intersect).elements().is_empty());
+        assert_eq!(overlay(&left, &right, Op::Trim).elements(), left.elements());
+        assert!(weld.elements().iter().any(|e| matches!(e, PathEl::CurveTo(_, _, _))));
+    }
+
+    #[test]
+    fn diagonal_non_crossing_paths_preserve_exact_nodes_despite_overlapping_bounds() {
+        let mut lower = BezPath::new();
+        lower.move_to((0.0, 0.0));
+        lower.line_to((10.0, 0.0));
+        lower.line_to((0.0, 10.0));
+        lower.close_path();
+
+        let mut upper = BezPath::new();
+        upper.move_to((8.0, 8.0));
+        upper.line_to((18.0, 8.0));
+        upper.line_to((8.0, 18.0));
+        upper.close_path();
+
+        let a = lower.bounding_box();
+        let b = upper.bounding_box();
+        assert!(a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1);
+        assert_eq!(
+            overlay(&lower, &upper, Op::Weld).elements(),
+            join_exact_paths(&[lower.clone(), upper.clone()]).elements()
+        );
+        assert_eq!(overlay_parts(&lower, &upper, Op::Weld).len(), 2);
+        assert!(overlay(&lower, &upper, Op::Intersect).elements().is_empty());
+        assert_eq!(overlay(&lower, &upper, Op::Trim).elements(), lower.elements());
+    }
+
+    #[test]
+    fn chord_clearance_checks_real_distance_not_only_overlapping_boxes() {
+        let a = [10.0, 0.0];
+        let b = [0.0, 10.0];
+        let c = [18.0, 8.0];
+        let d = [8.0, 18.0];
+        assert!(!chord_bounds_near(a, b, c, d));
+        assert!(chord_bounds_near(
+            [0.0, 0.0], [10.0, 10.0],
+            [0.0, 10.0], [10.0, 0.0]
+        ));
+        assert!(chord_bounds_near(
+            [0.0, 0.0], [10.0, 0.0],
+            [10.0, 0.0], [20.0, 0.0]
+        ));
+    }
+
+    #[test]
+    fn nested_circles_preserve_cubics_and_make_editable_holes() {
+        use crate::geometry::Shape as _;
+        let outer = crate::geometry::Circle::new((0.0, 0.0), 25.0).to_path(0.01);
+        let inner = crate::geometry::Circle::new((0.0, 0.0), 8.0).to_path(0.01);
+        let trim = overlay(&outer, &inner, Op::Trim);
+        let diff_area = outer.area().abs() - inner.area().abs();
+        assert!((trim.area().abs() - diff_area).abs() < 1e-3);
+        assert!(trim.contains(Point::new(15.0, 0.0)));
+        assert!(!trim.contains(Point::new(0.0, 0.0)));
+        assert_eq!(trim.elements().iter().filter(|e| matches!(e, PathEl::MoveTo(_))).count(), 2);
+        assert_eq!(
+            trim.elements().iter().filter(|e| matches!(e, PathEl::CurveTo(_, _, _))).count(),
+            outer.elements().iter().filter(|e| matches!(e, PathEl::CurveTo(_, _, _))).count()
+                + inner.elements().iter().filter(|e| matches!(e, PathEl::CurveTo(_, _, _))).count()
+        );
+        let parts = overlay_parts(&outer, &inner, Op::Trim);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].elements(), trim.elements());
+        assert_eq!(overlay(&outer, &inner, Op::Weld).elements(), outer.elements());
+        assert_eq!(overlay(&outer, &inner, Op::Intersect).elements(), inner.elements());
+        assert!(overlay(&inner, &outer, Op::Trim).elements().is_empty());
+        let reverse_exclude = overlay(&inner, &outer, Op::Exclude);
+        assert!((reverse_exclude.area().abs() - diff_area).abs() < 1e-3);
+    }
+
+    #[test]
+    fn opposite_winding_on_a_nested_cut_still_produces_a_hole() {
+        use crate::geometry::Shape as _;
+        let outer = crate::geometry::Circle::new((0.0, 0.0), 30.0).to_path(0.01);
+        let inner = crate::geometry::Circle::new((0.0, 0.0), 6.0).to_path(0.01);
+        let opposite = reverse_closed_contour(&inner).expect("simple closed curve");
+        let trim = overlay(&outer, &opposite, Op::Trim);
+        assert!(!trim.contains(Point::new(0.0, 0.0)));
+        assert!(trim.contains(Point::new(15.0, 0.0)));
+        assert!((trim.area().abs() - (outer.area().abs() - inner.area().abs())).abs() < 1e-3);
+        assert!(trim.elements().iter().any(|e| matches!(e, PathEl::CurveTo(_, _, _))));
+    }
+
+    #[test]
+    fn exact_curve_detection_rejects_invalid_control_points() {
+        let mut invalid = BezPath::new();
+        invalid.move_to((0.0, 0.0));
+        invalid.curve_to(
+            Point::new(f64::NAN, 0.0),
+            Point::new(1.0, 2.0),
+            Point::new(2.0, 0.0),
+        );
+        invalid.line_to((0.0, 1.0));
+        invalid.close_path();
+        assert!(simple_closed_contour(&invalid).is_none());
+    }
+
+    #[test]
+    fn touching_and_crossing_paths_use_the_general_solver() {
+        use crate::geometry::Shape as _;
+        let a = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let crossing = crate::geometry::Circle::new((10.0, 0.0), 10.0).to_path(0.01);
+        let touching = crate::geometry::Circle::new((20.0, 0.0), 10.0).to_path(0.01);
+        assert!(exact_non_crossing_parts(&a, &crossing, Op::Weld).is_none());
+        assert!(exact_non_crossing_parts(&a, &touching, Op::Weld).is_none());
+        assert!(!overlay(&a, &crossing, Op::Intersect).elements().is_empty());
     }
 
     #[test]
