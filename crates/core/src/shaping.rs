@@ -573,7 +573,41 @@ fn exact_curve_line_crossing(
             kept.push(if forward { edge } else { reverse_edge(edge) });
         }
     }
-    crossing_cycles(&kept, vertices.len())
+    let paths = crossing_cycles(&kept, vertices.len())?;
+
+    // Last conservative guard: the stitched paths must agree with the
+    // expected boolean membership at representative interior samples.
+    // Ambiguous or incorrectly oriented output falls back to polygons.
+    let result = join_exact_paths(&paths);
+    let sa = subject.bounding_box();
+    let sb = clip.bounding_box();
+    let x0 = sa.x0.min(sb.x0);
+    let y0 = sa.y0.min(sb.y0);
+    let width = sa.x1.max(sb.x1) - x0;
+    let height = sa.y1.max(sb.y1) - y0;
+    if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
+        return None;
+    }
+    for ix in 1..=7 {
+        for iy in 1..=7 {
+            let point = Point::new(
+                x0 + width * (ix as f64 / 8.0),
+                y0 + height * (iy as f64 / 8.0),
+            );
+            let in_a = subject.contains(point);
+            let in_b = clip.contains(point);
+            let expected = match op {
+                Op::Weld => in_a || in_b,
+                Op::Intersect => in_a && in_b,
+                Op::Trim => in_a && !in_b,
+                Op::Exclude => return None,
+            };
+            if result.contains(point) != expected {
+                return None;
+            }
+        }
+    }
+    Some(paths)
 }
 
 /// Combine `subject` and `clip` (both in the same coordinate space).
