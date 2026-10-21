@@ -72,8 +72,11 @@ without an error.
 
 ## Baseline from 2026-10-21
 
-- The inventory has 215 `works` rows, five `partial` rows, one
-  `missing` row and four `not applicable` rows, plus an icon assessment.
+- The inventory was initially recorded as 215 `works` rows and five
+  `partial` rows. The shaping row was subsequently reclassified as partial
+  to reflect the unresolved curve-flattening limitation: the current
+  inventory is 214 `works`, six `partial`, one `missing` and four
+  `not applicable` rows, plus an icon assessment.
 - These numbers describe *declared* coverage, not independent verification.
 - The external `.cdr` coverage remains partial by the inventory's own
   admission. Older-format writing and many newer effects need fixture checks.
