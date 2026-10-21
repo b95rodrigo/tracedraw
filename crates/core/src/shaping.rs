@@ -1419,7 +1419,9 @@ mod tests {
         upper.line_to((8.0, 18.0));
         upper.close_path();
 
-        assert!(lower.bounding_box().intersect(upper.bounding_box()).area() > 0.0);
+        let a = lower.bounding_box();
+        let b = upper.bounding_box();
+        assert!(a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1);
         assert_eq!(
             overlay(&lower, &upper, Op::Weld).elements(),
             join_exact_paths(&[lower.clone(), upper.clone()]).elements()
