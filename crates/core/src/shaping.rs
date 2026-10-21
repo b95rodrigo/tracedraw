@@ -413,11 +413,13 @@ fn crossing_cycles(edges: &[CurveEdge], intersections: usize) -> Option<Vec<BezP
         if edge.from >= intersections || edge.to >= intersections {
             return None;
         }
-        if next[edge.from].replace(index).is_some() {
+        let slot = next.get_mut(edge.from)?;
+        if slot.replace(index).is_some() {
             return None;
         }
-        incoming[edge.to] += 1;
-        if incoming[edge.to] > 1 {
+        let count = incoming.get_mut(edge.to)?;
+        *count += 1;
+        if *count > 1 {
             return None;
         }
     }
