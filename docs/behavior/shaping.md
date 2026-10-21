@@ -36,6 +36,12 @@ aligned bounds), or that are strictly nested, keep their lines and cubic/quad
 control points. A subtraction that makes a hole keeps both original
 contours, reversing the inner one if needed for non-zero fill.
 
+When both selected inputs have identical simple closed paths, Weld and
+Intersect keep the exact original contour, while Trim and Exclude produce
+the empty result. Simplify also preserves any single simple closed contour
+without changing its node types or control points. This avoids destructive
+flattening where there is no overlap to resolve.
+
 Touching or crossing boundaries, complex or open paths and multiple
 subpaths still go through the polygon overlay engine. That engine flattens
 curves at 0.02 mm tolerance; it does not yet preserve editable original
