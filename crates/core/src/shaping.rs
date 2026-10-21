@@ -81,11 +81,11 @@ fn point_chord_distance_sq(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     let dx = b[0] - a[0];
     let dy = b[1] - a[1];
     let len_sq = dx * dx + dy * dy;
-    let t = if len_sq > 1e-24 {
+    let t = (if len_sq > 1e-24 {
         ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq
     } else {
         0.0
-    }
+    })
     .clamp(0.0, 1.0);
     let x = a[0] + dx * t - p[0];
     let y = a[1] + dy * t - p[1];
