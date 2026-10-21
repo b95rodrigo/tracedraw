@@ -323,9 +323,298 @@ fn exact_non_crossing_parts(
     }
 }
 
+/// An intersection on a segment, shared between both input boundaries.
+#[derive(Clone, Copy)]
+struct CurveCut {
+    segment: usize,
+    t: f64,
+    vertex: usize,
+}
+
+struct CurveEdge {
+    from: usize,
+    to: usize,
+    pieces: Vec<kurbo::PathSeg>,
+    inside_other: bool,
+}
+
+/// Walk the original path between successive intersections. The path's
+/// cubic and quadratic pieces are split at parameter values, not flattened.
+fn crossing_arcs(
+    segments: &[kurbo::PathSeg],
+    cuts: &[CurveCut],
+    other: &BezPath,
+) -> Option<Vec<CurveEdge>> {
+    let mut pieces: Vec<(Option<usize>, Option<usize>, kurbo::PathSeg)> = Vec::new();
+    for (index, segment) in segments.iter().enumerate() {
+        let mut hits: Vec<_> = cuts
+            .iter()
+            .filter(|hit| hit.segment == index)
+            .copied()
+            .collect();
+        hits.sort_by(|a, b| a.t.total_cmp(&b.t));
+        let mut start = 0.0;
+        let mut from = None;
+        for hit in hits {
+            if hit.t - start < 1e-6 {
+                return None;
+            }
+            pieces.push((from, Some(hit.vertex), segment.subsegment(start..hit.t)));
+            start = hit.t;
+            from = Some(hit.vertex);
+        }
+        if 1.0 - start < 1e-6 {
+            return None;
+        }
+        pieces.push((from, None, segment.subsegment(start..1.0)));
+    }
+
+    // Each boundary is a cycle; rotate it so the first piece begins at
+    // a shared intersection. The closing cut falls at the last piece.
+    let pivot = pieces.iter().position(|piece| piece.0.is_some())?;
+    let mut from = pieces.get(pivot)?.0?;
+    let mut active = Vec::new();
+    let mut arcs = Vec::new();
+    for i in 0..pieces.len() {
+        let piece = pieces.get((pivot + i) % pieces.len())?;
+        active.push(piece.2);
+        if let Some(to) = piece.1 {
+            let sample = active.get(active.len() / 2)?.eval(0.5);
+            arcs.push(CurveEdge {
+                from,
+                to,
+                inside_other: other.contains(sample),
+                pieces: std::mem::take(&mut active),
+            });
+            from = to;
+        }
+    }
+    if !active.is_empty() || arcs.len() != cuts.len() {
+        return None;
+    }
+    Some(arcs)
+}
+
+fn reverse_edge(mut edge: CurveEdge) -> CurveEdge {
+    std::mem::swap(&mut edge.from, &mut edge.to);
+    edge.pieces = edge.pieces.into_iter().rev().map(|seg| seg.reverse()).collect();
+    edge
+}
+
+/// Assemble directed arcs only if every visited crossing has exactly one
+/// incoming and outgoing edge. Ambiguous topology uses the old solver.
+fn crossing_cycles(edges: &[CurveEdge], intersections: usize) -> Option<Vec<BezPath>> {
+    if edges.is_empty() {
+        return None;
+    }
+    let mut next = vec![None; intersections];
+    let mut incoming = vec![0usize; intersections];
+    for (index, edge) in edges.iter().enumerate() {
+        if edge.from >= intersections || edge.to >= intersections {
+            return None;
+        }
+        let slot = next.get_mut(edge.from)?;
+        if slot.replace(index).is_some() {
+            return None;
+        }
+        let count = incoming.get_mut(edge.to)?;
+        *count += 1;
+        if *count > 1 {
+            return None;
+        }
+    }
+    if (0..intersections).any(|id| next[id].is_some() != (incoming[id] == 1)) {
+        return None;
+    }
+
+    let mut used = vec![false; edges.len()];
+    let mut shapes = Vec::new();
+    for first in 0..edges.len() {
+        if used[first] {
+            continue;
+        }
+        let mut path = BezPath::new();
+        path.move_to(edges.get(first)?.pieces.first()?.start());
+        let mut current = first;
+        let mut closed = false;
+        for _ in 0..edges.len() {
+            if used[current] {
+                return None;
+            }
+            used[current] = true;
+            let edge = edges.get(current)?;
+            for segment in &edge.pieces {
+                path.push(segment.as_path_el());
+            }
+            let following = *next.get(edge.to)?.as_ref()?;
+            if following == first {
+                path.close_path();
+                closed = true;
+                break;
+            }
+            current = following;
+        }
+        if !closed {
+            return None;
+        }
+        shapes.push(path);
+    }
+    Some(shapes)
+}
+
+/// An exact-curve solver for a conservative subset of crossing paths:
+/// one input boundary must consist entirely of straight lines, while the
+/// other may contain lines, quadratics and cubics. Segment-line roots are
+/// computed in curve parameter space, and both boundaries are split into
+/// original parametric pieces. Coincident edges, tangencies, shared nodes,
+/// complicated contours and XOR deliberately use polygon fallback.
+fn exact_curve_line_crossing(
+    subject: &BezPath,
+    clip: &BezPath,
+    op: Op,
+) -> Option<Vec<BezPath>> {
+    use crate::geometry::{PathSeg, Shape as _};
+    if op == Op::Exclude {
+        return None;
+    }
+    let a_poly = simple_closed_contour(subject)?;
+    let b_poly = simple_closed_contour(clip)?;
+    let (a, a_closed) = subpath_segments(subject).pop()?;
+    let (b, b_closed) = subpath_segments(clip).pop()?;
+    if !a_closed || !b_closed || a.is_empty() || b.is_empty()
+        || a.len() > 64 || b.len() > 64
+        || (!a.iter().all(|s| matches!(s, PathSeg::Line(_)))
+            && !b.iter().all(|s| matches!(s, PathSeg::Line(_))))
+    {
+        return None;
+    }
+
+    let mut a_cuts = Vec::new();
+    let mut b_cuts = Vec::new();
+    let mut vertices: Vec<Point> = Vec::new();
+    for (i, sa) in a.iter().enumerate() {
+        for (j, sb) in b.iter().enumerate() {
+            let hits: Vec<(f64, f64)> = match (sa, sb) {
+                (PathSeg::Line(line), _) => sb
+                    .intersect_line(*line)
+                    .iter()
+                    .map(|h| (h.line_t, h.segment_t))
+                    .collect(),
+                (_, PathSeg::Line(line)) => sa
+                    .intersect_line(*line)
+                    .iter()
+                    .map(|h| (h.segment_t, h.line_t))
+                    .collect(),
+                _ => return None,
+            };
+            for (ta, tb) in hits {
+                // Do not guess ownership of a vertex shared by segments.
+                if !ta.is_finite() || !tb.is_finite()
+                    || !(1e-5..=1.0 - 1e-5).contains(&ta)
+                    || !(1e-5..=1.0 - 1e-5).contains(&tb)
+                {
+                    return None;
+                }
+                let pa = sa.eval(ta);
+                let pb = sb.eval(tb);
+                if (pa - pb).hypot() > 1e-6
+                    || vertices.iter().any(|p| (*p - pa).hypot() < 1e-5)
+                {
+                    return None;
+                }
+                // A tangent contact is not a topological crossing.
+                let delta = 1e-5;
+                let da = sa.eval(ta + delta) - sa.eval(ta - delta);
+                let db = sb.eval(tb + delta) - sb.eval(tb - delta);
+                let cross = da.x * db.y - da.y * db.x;
+                if cross.abs() < 1e-4 * da.hypot() * db.hypot()
+                    || da.hypot() < 1e-10
+                    || db.hypot() < 1e-10
+                {
+                    return None;
+                }
+                let id = vertices.len();
+                vertices.push(pa);
+                a_cuts.push(CurveCut { segment: i, t: ta, vertex: id });
+                b_cuts.push(CurveCut { segment: j, t: tb, vertex: id });
+                if vertices.len() > 32 {
+                    return None;
+                }
+            }
+        }
+    }
+    if vertices.len() < 2 || vertices.len() % 2 != 0 {
+        return None;
+    }
+    let a_arcs = crossing_arcs(&a, &a_cuts, clip)?;
+    let b_arcs = crossing_arcs(&b, &b_cuts, subject)?;
+    let mut kept = Vec::new();
+    for edge in a_arcs {
+        let include = match op {
+            Op::Weld | Op::Trim => !edge.inside_other,
+            Op::Intersect => edge.inside_other,
+            Op::Exclude => false,
+        };
+        if include {
+            kept.push(edge);
+        }
+    }
+
+    let same_winding = signed_polygon_area(&a_poly).signum()
+        == signed_polygon_area(&b_poly).signum();
+    for edge in b_arcs {
+        let include = match op {
+            Op::Weld => !edge.inside_other,
+            Op::Intersect | Op::Trim => edge.inside_other,
+            Op::Exclude => false,
+        };
+        if include {
+            let forward = if op == Op::Trim { !same_winding } else { same_winding };
+            kept.push(if forward { edge } else { reverse_edge(edge) });
+        }
+    }
+    let paths = crossing_cycles(&kept, vertices.len())?;
+
+    // Last conservative guard: the stitched paths must agree with the
+    // expected boolean membership at representative interior samples.
+    // Ambiguous or incorrectly oriented output falls back to polygons.
+    let result = join_exact_paths(&paths);
+    let sa = subject.bounding_box();
+    let sb = clip.bounding_box();
+    let x0 = sa.x0.min(sb.x0);
+    let y0 = sa.y0.min(sb.y0);
+    let width = sa.x1.max(sb.x1) - x0;
+    let height = sa.y1.max(sb.y1) - y0;
+    if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
+        return None;
+    }
+    for ix in 1..=7 {
+        for iy in 1..=7 {
+            let point = Point::new(
+                x0 + width * (ix as f64 / 8.0),
+                y0 + height * (iy as f64 / 8.0),
+            );
+            let in_a = subject.contains(point);
+            let in_b = clip.contains(point);
+            let expected = match op {
+                Op::Weld => in_a || in_b,
+                Op::Intersect => in_a && in_b,
+                Op::Trim => in_a && !in_b,
+                Op::Exclude => return None,
+            };
+            if result.contains(point) != expected {
+                return None;
+            }
+        }
+    }
+    Some(paths)
+}
+
 /// Combine `subject` and `clip` (both in the same coordinate space).
 pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
-    if let Some(parts) = exact_non_crossing_parts(subject, clip, op) {
+    if let Some(parts) = exact_non_crossing_parts(subject, clip, op)
+        .or_else(|| exact_curve_line_crossing(subject, clip, op))
+    {
         return join_exact_paths(&parts);
     }
     let subj = contours(subject);
@@ -343,7 +632,9 @@ pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
 /// Combine `subject` and `clip` as [`overlay`] does, each separate piece
 /// of the result (its outline with its holes) a path of its own.
 pub fn overlay_parts(subject: &BezPath, clip: &BezPath, op: Op) -> Vec<BezPath> {
-    if let Some(parts) = exact_non_crossing_parts(subject, clip, op) {
+    if let Some(parts) = exact_non_crossing_parts(subject, clip, op)
+        .or_else(|| exact_curve_line_crossing(subject, clip, op))
+    {
         return parts;
     }
     let subj = contours(subject);
@@ -1556,6 +1847,72 @@ mod tests {
         assert!(simple_closed_contour(&self_crossing).is_none());
         // The polygon solver, not the exact-path early return, receives it.
         assert!(!simplify(&self_crossing).elements().is_empty());
+    }
+
+    #[test]
+    fn curve_crossing_straight_clip_keeps_cubics_in_weld_intersect_and_trim() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let clip = Rect::new(-5.0, -15.0, 3.0, 15.0).to_path(0.01);
+        let originals = circle.elements()
+            .iter()
+            .filter(|el| matches!(el, PathEl::CurveTo(_, _, _)))
+            .count();
+        assert!(originals > 0);
+        for op in [Op::Weld, Op::Intersect, Op::Trim] {
+            let pieces = exact_curve_line_crossing(&circle, &clip, op)
+                .expect("four clean crossings should keep cubic segments");
+            let result = join_exact_paths(&pieces);
+            let cubics = result.elements()
+                .iter()
+                .filter(|el| matches!(el, PathEl::CurveTo(_, _, _)))
+                .count();
+            assert!(cubics > 0 && cubics <= originals + 8, "{op:?}: {cubics}");
+            assert_eq!(overlay(&circle, &clip, op).elements(), result.elements());
+            assert!(!pieces.is_empty());
+            match op {
+                Op::Weld => {
+                    assert!(result.contains(Point::new(9.0, 0.0)));
+                    assert!(result.contains(Point::new(0.0, 12.0)));
+                }
+                Op::Intersect => {
+                    assert!(result.contains(Point::new(0.0, 0.0)));
+                    assert!(!result.contains(Point::new(9.0, 0.0)));
+                    assert!(!result.contains(Point::new(0.0, 12.0)));
+                }
+                Op::Trim => {
+                    assert!(result.contains(Point::new(9.0, 0.0)));
+                    assert!(!result.contains(Point::new(0.0, 0.0)));
+                }
+                Op::Exclude => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn straight_subject_and_curved_clip_retain_curve_segments() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let subject = Rect::new(-5.0, -15.0, 3.0, 15.0).to_path(0.01);
+        for op in [Op::Weld, Op::Intersect, Op::Trim] {
+            let parts = exact_curve_line_crossing(&subject, &circle, op)
+                .expect("clean straight-curve intersections");
+            let result = join_exact_paths(&parts);
+            assert!(result.elements().iter().any(|el|
+                matches!(el, PathEl::CurveTo(_, _, _))));
+            assert_eq!(overlay_parts(&subject, &circle, op).len(), parts.len());
+        }
+    }
+
+    #[test]
+    fn touching_curve_and_straight_boundary_use_polygon_fallback() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let touching = Rect::new(10.0, -15.0, 20.0, 15.0).to_path(0.01);
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Weld).is_none());
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Intersect).is_none());
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Trim).is_none());
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Exclude).is_none());
     }
 
     #[test]
