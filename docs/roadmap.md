@@ -11,8 +11,9 @@ for evidence-based acceptance before calling a version reliable.
    independently checkable and separate current tests from planned gates.
 2. **P0 editor CI**: run the main application package's tests under Xvfb
    as part of the workspace suite before packaging.
-3. **P0 vector quality**: preserve cubic segments during boolean shaping;
-   verify node counts, topology and editable output.
+3. **P0 vector quality**: first conservative exact-curve cases for
+   separated/nested contours have regression tests; crossing boundaries,
+   node counts, topology and exported file behavior still require work.
 4. **P0 interaction and performance**: reproduce selection, clip-frame,
    pan and zoom bugs and add regression/benchmark fixtures.
 5. **P0 interchange and production**: test representative recent CDR
