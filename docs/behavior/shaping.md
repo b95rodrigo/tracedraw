@@ -30,8 +30,9 @@ is one undo step.
 ### Editable curve preservation
 
 Weld, Trim, Intersect and Exclude now have a conservative exact-path case:
-two finite, non-self-intersecting, single closed contours that are clearly
-separated or strictly nested keep their existing lines and cubic/quad
+two finite, non-self-intersecting, single closed contours whose real
+boundaries stay clearly separated (including cases with overlapping axis-
+aligned bounds), or that are strictly nested, keep their lines and cubic/quad
 control points. A subtraction that makes a hole keeps both original
 contours, reversing the inner one if needed for non-zero fill.
 
@@ -41,10 +42,11 @@ curves at 0.02 mm tolerance; it does not yet preserve editable original
 segments at intersections. Do not treat this partial improvement as a
 complete curve-preserving boolean implementation.
 
-Regression tests in `crates/core/src/shaping.rs` cover disjoint cubic
-curves, nested curve holes, exact control-point retention and deliberate
-fallback on touching/crossing paths. Their execution needs a local Rust
-toolchain when hosted CI is not available.
+Regression tests in `crates/core/src/shaping.rs` cover disjoint curves,
+including overlapping bounds, nested curve holes, exact control-point
+retention, winding direction, invalid input rejection and deliberate
+fallback on touching/crossing paths. These tests are committed but have
+not been executed in this change.
 
 ## Panel
 
