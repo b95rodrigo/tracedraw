@@ -1,7 +1,25 @@
 # Roadmap
 
-File compatibility target: open `.cdr` format versions 9 through 17
-reliably; newer versions best effort.
+File format support covers several generations of `.cdr` containers and
+includes writers for versions 7 through 27. Feature coverage and successful
+round-trips are not universal. See [compatibility-matrix.md](compatibility-matrix.md)
+for evidence-based acceptance before calling a version reliable.
+
+## Immediate quality sequence (2026-10-21)
+
+1. **P0 inventory and acceptance audit**: make declared feature counts
+   independently checkable and separate current tests from planned gates.
+2. **P0 editor CI**: run the main application package's tests under Xvfb
+   as part of the workspace suite before packaging.
+3. **P0 vector quality**: preserve cubic segments during boolean shaping;
+   verify node counts, topology and editable output.
+4. **P0 interaction and performance**: reproduce selection, clip-frame,
+   pan and zoom bugs and add regression/benchmark fixtures.
+5. **P0 interchange and production**: test representative recent CDR
+   files, text, ICC profiles, separations and PDF/X with independent readers.
+
+A milestone's implementation being marked done is not a substitute for
+this quality sequence. Current priorities are in the compatibility matrix.
 
 ## M0 Skeleton (done)
 Workspace, document model, commands + undo, SVG export, native format,
@@ -18,8 +36,9 @@ Status tracked in `docs/features.md`.
 - Layer names, page names, multi-page
 - Version 16+ container (`content/root.dat`, redirected chunks); a
   version 21 file opens correctly (text, cropped bitmaps, object order)
-- Open: corpus per version in `corpus/`, text on path, splines, paragraph
-  formatting from the style tables
+- Open: text on path and paragraph formatting from the style tables.
+  A versioned real-file corpus and complete spline support remain open
+  verification/implementation items.
 
 ## M2 Drawing (done)
 - All 64 tools, node editing, transform handles, snapping, rulers
@@ -34,7 +53,9 @@ Status tracked in `docs/features.md`.
 - Print to PDF, print preview, print merge
 - PDF/X-1a, X-3 and X-4 output (done)
 - Publish to PDF with document information, bookmarks and password protection (AES-256); protected PDFs of every revision open (done; see `behavior/publish-to-pdf.md`)
-- `.cdr` write in versions 7 to 27, chosen when saving (RIFF, ZIP and redirected ZIP layouts; read back here and opened by another public reader) (done)
+- `.cdr` writing exists for versions 7 to 27 (RIFF, ZIP and redirected ZIP
+  layouts); real-file round-trip coverage is partial. See `features.md`
+  and the compatibility matrix before claiming interoperability.
 
 ## M4 Platform (done)
 - CLI batch convert (done); installers for Windows, macOS, Linux (done)
