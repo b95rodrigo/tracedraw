@@ -1814,6 +1814,72 @@ mod tests {
     }
 
     #[test]
+    fn curve_crossing_straight_clip_keeps_cubics_in_weld_intersect_and_trim() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let clip = Rect::new(-5.0, -15.0, 3.0, 15.0).to_path(0.01);
+        let originals = circle.elements()
+            .iter()
+            .filter(|el| matches!(el, PathEl::CurveTo(_, _, _)))
+            .count();
+        assert!(originals > 0);
+        for op in [Op::Weld, Op::Intersect, Op::Trim] {
+            let pieces = exact_curve_line_crossing(&circle, &clip, op)
+                .expect("four clean crossings should keep cubic segments");
+            let result = join_exact_paths(&pieces);
+            let cubics = result.elements()
+                .iter()
+                .filter(|el| matches!(el, PathEl::CurveTo(_, _, _)))
+                .count();
+            assert!(cubics > 0 && cubics <= originals + 8, "{op:?}: {cubics}");
+            assert_eq!(overlay(&circle, &clip, op).elements(), result.elements());
+            assert!(!pieces.is_empty());
+            match op {
+                Op::Weld => {
+                    assert!(result.contains(Point::new(9.0, 0.0)));
+                    assert!(result.contains(Point::new(0.0, 12.0)));
+                }
+                Op::Intersect => {
+                    assert!(result.contains(Point::new(0.0, 0.0)));
+                    assert!(!result.contains(Point::new(9.0, 0.0)));
+                    assert!(!result.contains(Point::new(0.0, 12.0)));
+                }
+                Op::Trim => {
+                    assert!(result.contains(Point::new(9.0, 0.0)));
+                    assert!(!result.contains(Point::new(0.0, 0.0)));
+                }
+                Op::Exclude => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn straight_subject_and_curved_clip_retain_curve_segments() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let subject = Rect::new(-5.0, -15.0, 3.0, 15.0).to_path(0.01);
+        for op in [Op::Weld, Op::Intersect, Op::Trim] {
+            let parts = exact_curve_line_crossing(&subject, &circle, op)
+                .expect("clean straight-curve intersections");
+            let result = join_exact_paths(&parts);
+            assert!(result.elements().iter().any(|el|
+                matches!(el, PathEl::CurveTo(_, _, _))));
+            assert_eq!(overlay_parts(&subject, &circle, op).len(), parts.len());
+        }
+    }
+
+    #[test]
+    fn touching_curve_and_straight_boundary_use_polygon_fallback() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let touching = Rect::new(10.0, -15.0, 20.0, 15.0).to_path(0.01);
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Weld).is_none());
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Intersect).is_none());
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Trim).is_none());
+        assert!(exact_curve_line_crossing(&circle, &touching, Op::Exclude).is_none());
+    }
+
+    #[test]
     fn touching_and_crossing_paths_use_the_general_solver() {
         use crate::geometry::Shape as _;
         let a = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
