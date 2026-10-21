@@ -263,6 +263,14 @@ fn exact_non_crossing_parts(
     op: Op,
 ) -> Option<Vec<BezPath>> {
     use crate::geometry::Shape as _;
+    // Identical closed contours need no curve subdivision or polygon
+    // reconstruction. Difference and XOR cancel exactly.
+    if subject.elements() == clip.elements() && simple_closed_contour(subject).is_some() {
+        return Some(match op {
+            Op::Weld | Op::Intersect => vec![subject.clone()],
+            Op::Trim | Op::Exclude => Vec::new(),
+        });
+    }
     let margin = 2.0 * TOL + 1e-7;
     let sb = subject.bounding_box();
     let cb = clip.bounding_box();
@@ -1137,6 +1145,11 @@ fn append_piece(
 
 /// Union of one path with itself: removes self-overlaps (Simplify).
 pub fn simplify(path: &BezPath) -> BezPath {
+    // A simple closed contour has no overlaps to remove. Preserve its
+    // original editable lines, quadratics and cubics without flattening.
+    if simple_closed_contour(path).is_some() {
+        return path.clone();
+    }
     let subj = contours(path);
     let empty: Vec<Vec<[f64; 2]>> = Vec::new();
     let result = subj.overlay(&empty, OverlayRule::Subject, IFill::NonZero);
@@ -1506,6 +1519,43 @@ mod tests {
         invalid.line_to((0.0, 1.0));
         invalid.close_path();
         assert!(simple_closed_contour(&invalid).is_none());
+    }
+
+    #[test]
+    fn identical_curved_shapes_keep_exact_nodes_for_idempotent_operations() {
+        use crate::geometry::Shape as _;
+        let a = crate::geometry::Circle::new((0.0, 0.0), 12.0).to_path(0.01);
+        assert_eq!(overlay(&a, &a, Op::Weld).elements(), a.elements());
+        assert_eq!(overlay(&a, &a, Op::Intersect).elements(), a.elements());
+        assert!(overlay(&a, &a, Op::Trim).elements().is_empty());
+        assert!(overlay(&a, &a, Op::Exclude).elements().is_empty());
+        assert_eq!(overlay_parts(&a, &a, Op::Weld)[0].elements(), a.elements());
+    }
+
+    #[test]
+    fn simplify_of_non_overlapping_curves_preserves_quadratic_and_cubic_nodes() {
+        let mut curved = BezPath::new();
+        curved.move_to((0.0, 0.0));
+        curved.quad_to((10.0, 0.0), (10.0, 10.0));
+        curved.curve_to((5.0, 15.0), (0.0, 15.0), (0.0, 10.0));
+        curved.close_path();
+        assert!(simple_closed_contour(&curved).is_some());
+        assert_eq!(simplify(&curved).elements(), curved.elements());
+        assert!(curved.elements().iter().any(|el| matches!(el, PathEl::QuadTo(_, _))));
+        assert!(curved.elements().iter().any(|el| matches!(el, PathEl::CurveTo(_, _, _))));
+    }
+
+    #[test]
+    fn simplify_self_crossing_contours_uses_general_overlay() {
+        let mut self_crossing = BezPath::new();
+        self_crossing.move_to((0.0, 0.0));
+        self_crossing.line_to((12.0, 12.0));
+        self_crossing.line_to((0.0, 12.0));
+        self_crossing.line_to((12.0, 0.0));
+        self_crossing.close_path();
+        assert!(simple_closed_contour(&self_crossing).is_none());
+        // The polygon solver, not the exact-path early return, receives it.
+        assert!(!simplify(&self_crossing).elements().is_empty());
     }
 
     #[test]
