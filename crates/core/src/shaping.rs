@@ -76,16 +76,59 @@ fn join_exact_paths(paths: &[BezPath]) -> BezPath {
     out
 }
 
-/// Two polygonal chords must be safely apart before treating the original
-/// cubic boundaries as non-intersecting. Flattening has a maximum deviation
-/// of TOL per input curve, hence the 2*TOL clearance.
+/// Euclidean distance from a point to a chord, squared.
+fn point_chord_distance_sq(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let len_sq = dx * dx + dy * dy;
+    let t = if len_sq > 1e-24 {
+        ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / len_sq
+    } else {
+        0.0
+    }
+    .clamp(0.0, 1.0);
+    let x = a[0] + dx * t - p[0];
+    let y = a[1] + dy * t - p[1];
+    x * x + y * y
+}
+
+fn chord_side(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> f64 {
+    (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0])
+}
+
+/// True when two polygonal chords cross or are too close to trust the
+/// flattened geometry. A bounding-box test alone rejects safe diagonal
+/// segments, so check the actual chord distance when the boxes overlap.
+/// Flattening uses TOL per input path: require 2*TOL clearance.
 fn chord_bounds_near(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> bool {
     let gap = 2.0 * TOL + 1e-7;
     let (ax0, ax1) = (a[0].min(b[0]), a[0].max(b[0]));
     let (ay0, ay1) = (a[1].min(b[1]), a[1].max(b[1]));
     let (bx0, bx1) = (c[0].min(d[0]), c[0].max(d[0]));
     let (by0, by1) = (c[1].min(d[1]), c[1].max(d[1]));
-    ax0 <= bx1 + gap && bx0 <= ax1 + gap && ay0 <= by1 + gap && by0 <= ay1 + gap
+    if ax0 > bx1 + gap
+        || bx0 > ax1 + gap
+        || ay0 > by1 + gap
+        || by0 > ay1 + gap
+    {
+        return false;
+    }
+
+    let ab_c = chord_side(a, b, c);
+    let ab_d = chord_side(a, b, d);
+    let cd_a = chord_side(c, d, a);
+    let cd_b = chord_side(c, d, b);
+    if (ab_c > 0.0 && ab_d < 0.0 || ab_c < 0.0 && ab_d > 0.0)
+        && (cd_a > 0.0 && cd_b < 0.0 || cd_a < 0.0 && cd_b > 0.0)
+    {
+        return true;
+    }
+
+    let gap_sq = gap * gap;
+    point_chord_distance_sq(a, c, d) <= gap_sq
+        || point_chord_distance_sq(b, c, d) <= gap_sq
+        || point_chord_distance_sq(c, a, b) <= gap_sq
+        || point_chord_distance_sq(d, a, b) <= gap_sq
 }
 
 fn signed_polygon_area(contour: &[[f64; 2]]) -> f64 {
@@ -220,17 +263,9 @@ fn exact_non_crossing_parts(
         || cb.x1 + margin < sb.x0
         || sb.y1 + margin < cb.y0
         || cb.y1 + margin < sb.y0;
-    let subject_in_clip_bounds = sb.x0 > cb.x0 + margin
-        && sb.y0 > cb.y0 + margin
-        && sb.x1 + margin < cb.x1
-        && sb.y1 + margin < cb.y1;
-    let clip_in_subject_bounds = cb.x0 > sb.x0 + margin
-        && cb.y0 > sb.y0 + margin
-        && cb.x1 + margin < sb.x1
-        && cb.y1 + margin < sb.y1;
-    if !separate && !subject_in_clip_bounds && !clip_in_subject_bounds {
-        return None;
-    }
+    // Overlapping bounds do not imply touching curves: two diagonally
+    // separated shapes can share an axis-aligned bounding rectangle.
+    // Validate actual chord clearance before classifying their topology.
     let a = simple_closed_contour(subject)?;
     let b = simple_closed_contour(clip)?;
     if !separate {
@@ -1368,6 +1403,47 @@ mod tests {
         assert!(overlay(&left, &right, Op::Intersect).elements().is_empty());
         assert_eq!(overlay(&left, &right, Op::Trim).elements(), left.elements());
         assert!(weld.elements().iter().any(|e| matches!(e, PathEl::CurveTo(_, _, _))));
+    }
+
+    #[test]
+    fn diagonal_non_crossing_paths_preserve_exact_nodes_despite_overlapping_bounds() {
+        let mut lower = BezPath::new();
+        lower.move_to((0.0, 0.0));
+        lower.line_to((10.0, 0.0));
+        lower.line_to((0.0, 10.0));
+        lower.close_path();
+
+        let mut upper = BezPath::new();
+        upper.move_to((8.0, 8.0));
+        upper.line_to((18.0, 8.0));
+        upper.line_to((8.0, 18.0));
+        upper.close_path();
+
+        assert!(lower.bounding_box().intersect(upper.bounding_box()).area() > 0.0);
+        assert_eq!(
+            overlay(&lower, &upper, Op::Weld).elements(),
+            join_exact_paths(&[lower.clone(), upper.clone()]).elements()
+        );
+        assert_eq!(overlay_parts(&lower, &upper, Op::Weld).len(), 2);
+        assert!(overlay(&lower, &upper, Op::Intersect).elements().is_empty());
+        assert_eq!(overlay(&lower, &upper, Op::Trim).elements(), lower.elements());
+    }
+
+    #[test]
+    fn chord_clearance_checks_real_distance_not_only_overlapping_boxes() {
+        let a = [10.0, 0.0];
+        let b = [0.0, 10.0];
+        let c = [18.0, 8.0];
+        let d = [8.0, 18.0];
+        assert!(!chord_bounds_near(a, b, c, d));
+        assert!(chord_bounds_near(
+            [0.0, 0.0], [10.0, 10.0],
+            [0.0, 10.0], [10.0, 0.0]
+        ));
+        assert!(chord_bounds_near(
+            [0.0, 0.0], [10.0, 0.0],
+            [10.0, 0.0], [20.0, 0.0]
+        ));
     }
 
     #[test]
