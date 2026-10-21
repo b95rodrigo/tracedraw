@@ -42,17 +42,27 @@ the empty result. Simplify also preserves any single simple closed contour
 without changing its node types or control points. This avoids destructive
 flattening where there is no overlap to resolve.
 
-Touching or crossing boundaries, complex or open paths and multiple
-subpaths still go through the polygon overlay engine. That engine flattens
-curves at 0.02 mm tolerance; it does not yet preserve editable original
-segments at intersections. Do not treat this partial improvement as a
-complete curve-preserving boolean implementation.
+A second, limited crossing solver is available for Weld, Intersect and
+Trim when one simple closed boundary uses only straight segments and the
+other may contain quadratic or cubic segments. It obtains intersections
+in curve parameter space, splits the original path segments at those
+parameters, and joins the selected directed arcs. It retains quadratic
+and cubic control points for cases with unambiguous topology.
+
+The conservative fallback still covers two intersecting curved boundaries,
+coincident edges, tangencies, junctions at existing nodes, Exclude on
+crossing boundaries, self-intersections, open paths and multi-contour
+shapes. That algorithm flattens curves at 0.02 mm tolerance, so none of
+these cases is yet a general curve-preserving boolean implementation.
+The new solver is source-integrated, not runtime-verified.
 
 Regression tests in `crates/core/src/shaping.rs` cover disjoint curves,
 including overlapping bounds, nested curve holes, exact control-point
 retention, winding direction, invalid input rejection and deliberate
-fallback on touching/crossing paths. These tests are committed but have
-not been executed in this change.
+fallback on touching/crossing paths. Additional unexecuted tests cover
+straight/curved crossing contours in both operand orders, operations that
+produce multiple pieces, and tangent-line fallback. These tests have not
+been executed.
 
 ## Panel
 
