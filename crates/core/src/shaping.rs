@@ -168,7 +168,7 @@ fn polygon_contains(contour: &[[f64; 2]], point: [f64; 2]) -> bool {
 fn reverse_closed_contour(path: &BezPath) -> Option<BezPath> {
     let subpaths = subpath_segments(path);
     let (segs, closed) = subpaths.first()?;
-    if subpaths.len() != 1 || !closed {
+    if subpaths.len() != 1 || !*closed {
         return None;
     }
     let mut out = BezPath::new();
