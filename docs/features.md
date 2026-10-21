@@ -6,7 +6,7 @@ checked screenshot behind it.
 "partial" names what is missing. "baked" means the result is applied once
 instead of staying live and editable. The goal is every row at "works".
 
-Counts: works 215, partial 5 (`.cdr` content coverage; `.cdr` writing; CMX import; colour styles; Find and Replace), missing 1 (system windows), not applicable 4. Icons are a separate visual assessment, not counted as a feature.
+Counts: works 214, partial 6 (shaping curve preservation; `.cdr` content coverage; `.cdr` writing; CMX import; colour styles; Find and Replace), missing 1 (system windows), not applicable 4. Icons are a separate visual assessment, not counted as a feature.
 
 These are self-reported implementation statuses, not a validated compatibility score. See `compatibility-matrix.md` for evidence requirements and independently verified workflows. The CI inventory check in `scripts/ci/check_feature_status.py` keeps these counts in sync with the rows below.
 
@@ -69,7 +69,7 @@ These are self-reported implementation statuses, not a validated compatibility s
 | Shape tool on rectangles (corner nodes, all or one corner), ellipses (pie inside, arc outside) and polygons (mirrored nodes, twisted stars) | works (see `behavior/shape-tool.md`) |
 | Node types: cusp, smooth, symmetrical; to line / to curve; reverse subpaths | works |
 | Add, delete, join, break, extract subpath, close curve, align nodes, reduce nodes | works |
-| Weld, Trim, Intersect, Simplify, Front minus back, Back minus front, Boundary (menu, panel and the property bar with several objects selected); Trim keeps the sources, Intersect keeps both; the panel's leave-original choices per operation (see `behavior/shaping.md`) | works |
+| Weld, Trim, Intersect, Simplify, Front minus back, Back minus front, Boundary (menu, panel and the property bar with several objects selected); Trim keeps the sources, Intersect keeps both; the panel's leave-original choices per operation (see `behavior/shaping.md`) | partial: operations run, but crossing/tangent curves are flattened to polygons; non-crossing simple contours now preserve editable segments |
 | Combine, Break apart, Group, Ungroup, Ungroup all | works |
 | Multipage View (View menu): every page in a grid with its name, a press on another page makes it current in place, Zoom to Fit shows all pages | works (see `behavior/multipage-view.md`) |
 | Focus mode: double-click a group or clip frame (or Bring into Focus) to edit its members with the rest faded; breadcrumb, Esc goes up, visibility setting | works (see `behavior/focus-mode.md`) |
