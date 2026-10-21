@@ -12,7 +12,8 @@ for evidence-based acceptance before calling a version reliable.
 2. **P0 editor CI**: run the main application package's tests under Xvfb
    as part of the workspace suite before packaging.
 3. **P0 vector quality**: first conservative exact-curve cases for
-   separated/nested contours have regression tests; crossing boundaries,
+   separated/nested contours, including diagonally disjoint paths with
+   overlapping bounds, have unexecuted regression tests; crossing boundaries,
    node counts, topology and exported file behavior still require work.
 4. **P0 interaction and performance**: reproduce selection, clip-frame,
    pan and zoom bugs and add regression/benchmark fixtures.
