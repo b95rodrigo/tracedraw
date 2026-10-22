@@ -2492,17 +2492,36 @@ fn loda(kind: u32, mut args: Vec<(u32, Vec<u8>)>) -> Vec<u8> {
     out.done()
 }
 
-/// The mean opacity of a transparency effect's mask: the lightness of
-/// its colours, averaged over a fountain's stops.
+/// Approximate a mask by its mean opacity along the gradient axis.
+/// Integrate over stop positions instead of averaging the stop colours:
+/// a colour held over 80% of the span must influence the result more than
+/// one held over 5%. This is still a lossy replacement for shaped,
+/// repeated or non-uniform two-dimensional transparency.
 fn mask_mean_opacity(e: &tracedraw_core::live::Effect) -> Option<f64> {
     let tracedraw_core::live::Effect::Transparency { mask, .. } = e else {
         return None;
     };
-    let level = |c: &tracedraw_core::Color| c.luminance().clamp(0.0, 1.0) as f64;
+    let level = |c: &tracedraw_core::Color| f64::from(c.luminance().clamp(0.0, 1.0));
     match mask {
         tracedraw_core::Fill::Solid(c) => Some(level(c)),
         tracedraw_core::Fill::Fountain(f) if !f.stops.is_empty() => {
-            Some(f.stops.iter().map(|st| level(&st.color)).sum::<f64>() / f.stops.len() as f64)
+            let stops = f.sorted_stops();
+            if stops.iter().any(|stop| !stop.pos.is_finite()) {
+                return None;
+            }
+            let first = stops.first()?;
+            let mut last_pos = first.pos.clamp(0.0, 1.0);
+            let mut last_level = level(&first.color);
+            let mut integral = last_pos * last_level;
+            for stop in stops.iter().skip(1) {
+                let pos = stop.pos.clamp(0.0, 1.0);
+                let next_level = level(&stop.color);
+                integral += (pos - last_pos) * (last_level + next_level) * 0.5;
+                last_pos = pos;
+                last_level = next_level;
+            }
+            integral += (1.0 - last_pos) * last_level;
+            Some(integral.clamp(0.0, 1.0))
         }
         _ => None,
     }
