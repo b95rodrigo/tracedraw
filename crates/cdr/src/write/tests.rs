@@ -2241,6 +2241,71 @@ fn unsupported_or_stacked_lens_effects_remain_flagged_as_lossy() {
 }
 
 #[test]
+fn simple_gradient_mask_is_native_only_when_entire_style_is_representable() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 65.0, 45.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    let simple = Fill::linear(Color::WHITE, Color::Gray { v: 0.5 }, 0.0);
+    shape.effects.push(Effect::Transparency {
+        mask: simple.clone(),
+        merge: MergeMode::Normal,
+        target: 2,
+    });
+    assert!(native_simple_gradient_mask(&shape, 16).is_some());
+    assert!(native_simple_gradient_mask(&shape, 27).is_some());
+    assert!(native_simple_gradient_mask(&shape, 15).is_none());
+    assert!(!export_fidelity_notes(&doc_with(vec![shape.clone()]), 27)
+        .iter().any(|n| n.contains("expanded")));
+
+    let mut many = shape.clone();
+    if let Effect::Transparency { mask: Fill::Fountain(ref mut gradient), .. } =
+        &mut many.effects[0]
+    {
+        gradient.stops.insert(1, tracedraw_core::style::Stop {
+            pos: 0.5,
+            color: Color::Gray { v: 0.2 },
+        });
+    }
+    assert!(native_simple_gradient_mask(&many, 27).is_none());
+    let notes = export_fidelity_notes(&doc_with(vec![many.clone()]), 27);
+    assert!(notes.iter().any(|n| n.contains("complex transparency")), "{notes:?}");
+    let bytes = document_to_cdr_version(&doc_with(vec![many]), 21);
+    let (back, report) = crate::open_bytes(&bytes, "complex-mask")
+        .expect("read approximated mask");
+    assert_eq!(report.skipped_objects, 0, "{:?}", report.warnings);
+    assert!(back.pages[0].layers[0].shapes[0].effects.is_empty());
+    assert!(back.pages[0].layers[0].shapes[0].opacity < 0.99);
+
+    let mut blended = shape.clone();
+    if let Effect::Transparency { merge, .. } = &mut blended.effects[0] {
+        *merge = MergeMode::Multiply;
+    }
+    assert!(native_simple_gradient_mask(&blended, 27).is_none());
+    assert!(export_fidelity_notes(&doc_with(vec![blended]), 27)
+        .iter().any(|n| n.contains("complex transparency")));
+
+    let mut stacked = shape;
+    stacked.effects.push(Effect::Transparency {
+        mask: Fill::Solid(Color::Gray { v: 0.5 }),
+        merge: MergeMode::Normal,
+        target: 2,
+    });
+    assert!(native_simple_gradient_mask(&stacked, 27).is_none());
+    let bytes = document_to_cdr_version(&doc_with(vec![stacked]), 21);
+    let (back, _) = crate::open_bytes(&bytes, "stacked")
+        .expect("read approximation");
+    assert!(back.pages[0].layers[0].shapes[0].effects.is_empty());
+    assert!(back.pages[0].layers[0].shapes[0].opacity < 0.5);
+}
+
+#[test]
 fn graded_transparency_is_written_as_a_gradient_from_16() {
     let mut doc = Document::new("w", Size::new(200.0, 100.0));
     let mut ids = doc.ids().clone();

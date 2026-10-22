@@ -125,6 +125,45 @@ fn native_invert_lens_arg(identifier: u32) -> Vec<u8> {
     record.done()
 }
 
+/// Only a single simple two-stop transparency can be represented by
+/// the known version-16+ style-string layout without dropping editable
+/// stops, repeats, stacking or blend semantics.
+fn native_simple_gradient_mask(shape: &Shape, version: u16)
+    -> Option<(tracedraw_core::Fountain, u8)>
+{
+    use tracedraw_core::live::{Effect, MergeMode};
+    if version < 16 || shape.opacity < 0.999
+        || shape.opacity_mask.is_some() || shape.effects.len() != 1
+        || !matches!(
+            &shape.kind,
+            ShapeKind::Rect { .. }
+                | ShapeKind::Ellipse { .. }
+                | ShapeKind::Path { .. }
+                | ShapeKind::Polygon { .. }
+        )
+    {
+        return None;
+    }
+    let Some(Effect::Transparency {
+        mask: Fill::Fountain(f),
+        merge: MergeMode::Normal,
+        target,
+    }) = shape.effects.first() else {
+        return None;
+    };
+    if *target > 2 || f.stops.len() != 2 || !f.runs_once()
+        || matches!(f.kind, FountainKind::Shaped)
+        || !f.angle.is_finite()
+        || !f.offset.x.is_finite() || !f.offset.y.is_finite()
+        || !f.edge_pad.is_finite() || !(0.0..=0.49).contains(&f.edge_pad)
+        || f.stops[0].pos.abs() > 1e-6
+        || (f.stops[1].pos - 1.0).abs() > 1e-6
+    {
+        return None;
+    }
+    Some((f.clone(), *target))
+}
+
 /// Known fidelity limitations of CDR writing, based on the actual
 /// conversion branches in Writer::object. This is not a full format
 /// compatibility assessment, and the list may be incomplete.
@@ -138,8 +177,10 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
         "native vector clipping layout is unverified in this CDR version";
     const LENS: &str =
         "native invert lens layout is unverified in this CDR version";
+    const GRADIENT: &str =
+        "complex transparency masks are approximated by uniform opacity";
 
-    let mut found = [false; 7];
+    let mut found = [false; 8];
     let mut pending: Vec<&Shape> = doc.pages.iter()
         .flat_map(|page| page.layers.iter())
         .flat_map(|layer| layer.shapes.iter())
@@ -160,8 +201,18 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
                 if version != 15 {
                     found[6] = true;
                 }
-            } else {
+            } else if native_simple_gradient_mask(shape, version).is_none() {
                 found[2] = true;
+            }
+            if native_simple_gradient_mask(shape, version).is_none()
+                && shape.effects.iter().any(|effect| matches!(
+                    effect,
+                    tracedraw_core::live::Effect::Transparency {
+                        mask: Fill::Fountain(_), ..
+                    }
+                ))
+            {
+                found[7] = true;
             }
         }
         if shape.opacity_mask.is_some() {
@@ -190,7 +241,7 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
             _ => {}
         }
     }
-    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK, EXPERIMENTAL, LENS]
+    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK, EXPERIMENTAL, LENS, GRADIENT]
         .into_iter()
         .zip(found)
         .filter_map(|(note, present)| present.then_some(note))
@@ -3513,30 +3564,24 @@ impl<'a> Writer<'a> {
                 self.invert_lenses.remove(&base.id);
                 return result;
             }
+            if let Some(gradient) = native_simple_gradient_mask(s, self.v.0) {
+                let mut base = s.clone();
+                base.effects.clear();
+                self.graded.insert(base.id, gradient);
+                let result = self.object(&base, centre, depth + 1);
+                self.graded.remove(&base.id);
+                return result;
+            }
             let ev = tracedraw_core::live::evaluate(s);
             let mut all: Vec<Shape> = ev.below.clone();
             let mut main = ev.main.clone();
-            // A graded transparency is written as a uniform one: the mean
-            // opacity of its mask (as files read before masks were).
-            // Version 16+ style strings keep the gradient itself.
-            let graded = s.effects.iter().find_map(|e| match e {
-                tracedraw_core::live::Effect::Transparency {
-                    mask: Fill::Fountain(f),
-                    target,
-                    ..
-                } => Some((f.clone(), *target)),
-                _ => None,
-            });
-            match graded {
-                Some(g) if self.v.style_strings() => {
-                    self.graded.insert(main.id, g);
-                }
-                _ => {
-                    if let Some(o) = s.effects.iter().find_map(mask_mean_opacity) {
-                        main.opacity *= o;
-                    }
-                }
-            }
+            // Unsupported mask structures cannot be represented by the
+            // limited native style. Approximate their luminance by a
+            // uniform opacity; the export report identifies this loss.
+            let mean_opacity = s.effects.iter()
+                .filter_map(mask_mean_opacity)
+                .fold(1.0, |opacity, level| opacity * level);
+            main.opacity *= mean_opacity;
             all.push(main);
             all.extend(ev.above.iter().cloned());
             for x in all.iter_mut() {
