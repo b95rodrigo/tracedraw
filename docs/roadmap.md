@@ -29,6 +29,8 @@ for evidence-based acceptance before calling a version reliable.
    newer formats are experimental and trigger compatibility warnings.
    A single native invert lens now has a source encoder based on an
    observed version-15 record; other versions remain unverified.
+   Two-stop gradient transparency uses the source-supported native
+   style path, while complex masks fall back with visible warnings.
    Independently inspect recent CDR files, complex text, ICC profiles,
    separations and PDF/X.
 
