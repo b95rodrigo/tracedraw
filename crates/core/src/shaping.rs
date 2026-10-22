@@ -273,7 +273,7 @@ fn same_segment_cycle(a: &BezPath, b: &BezPath) -> bool {
         return false;
     };
     if a_subpaths.len() != 1 || b_subpaths.len() != 1
-        || !a_closed || !b_closed
+        || !*a_closed || !*b_closed
         || a_segments.is_empty() || a_segments.len() != b_segments.len()
     {
         return false;
