@@ -723,16 +723,16 @@ mod tests {
         let svg = page_to_svg(&doc, 0);
         let definition = svg
             .lines()
-            .find(|line| line.contains(&format!("<clipPath id=\\"clip{}\\"", clip_id.raw())))
+            .find(|line| line.contains(&format!("<clipPath id=\"clip{}\"", clip_id.raw())))
             .expect("clip path definition");
-        assert!(definition.contains("clip-rule=\\"evenodd\\""), "{definition}");
+        assert!(definition.contains("clip-rule=\"evenodd\""), "{definition}");
         // Clip edges stay vector, including their original cubic controls
         // and the two closed subpaths of the even-odd compound contour.
         assert!(definition.contains("C"), "{definition}");
         assert!(definition.matches('M').count() >= 2, "{definition}");
         assert_eq!(definition.matches('Z').count(), 2);
         assert!(!definition.contains("<image"), "{definition}");
-        assert!(svg.contains(&format!("clip-path=\\"url(#clip{})\\"", clip_id.raw())));
+        assert!(svg.contains(&format!("clip-path=\"url(#clip{})\"", clip_id.raw())));
     }
 
     #[test]
