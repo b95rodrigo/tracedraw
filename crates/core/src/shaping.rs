@@ -255,6 +255,42 @@ fn exact_hole(
     Some(join_exact_paths(&[outer.clone(), inner]))
 }
 
+/// Recognise equal editable contours regardless of the chosen start node
+/// or traversal direction. Compare original segments, not rasterised
+/// geometry, so no near-equal or partially overlapping path is accepted.
+fn same_segment_cycle(a: &BezPath, b: &BezPath) -> bool {
+    if a.elements() == b.elements() {
+        return simple_closed_contour(a).is_some();
+    }
+    if simple_closed_contour(a).is_none() || simple_closed_contour(b).is_none() {
+        return false;
+    }
+    let a_subpaths = subpath_segments(a);
+    let b_subpaths = subpath_segments(b);
+    let (Some((a_segments, a_closed)), Some((b_segments, b_closed))) =
+        (a_subpaths.first(), b_subpaths.first())
+    else {
+        return false;
+    };
+    if a_subpaths.len() != 1 || b_subpaths.len() != 1
+        || !a_closed || !b_closed
+        || a_segments.is_empty() || a_segments.len() != b_segments.len()
+    {
+        return false;
+    }
+    let count = a_segments.len();
+    (0..count).any(|shift| {
+        let forward = a_segments.iter().enumerate().all(|(i, segment)| {
+            b_segments.get((shift + i) % count) == Some(segment)
+        });
+        let reversed = a_segments.iter().enumerate().all(|(i, segment)| {
+            b_segments.get((shift + count - i) % count)
+                .is_some_and(|other| other.reverse() == *segment)
+        });
+        forward || reversed
+    })
+}
+
 /// Retain exact cubic control points when two uncomplicated closed paths
 /// have a clear gap, or one lies strictly inside the other. This does not
 /// replace the polygon algorithm for crossing, touching or complex paths.
@@ -264,9 +300,9 @@ fn exact_non_crossing_parts(
     op: Op,
 ) -> Option<Vec<BezPath>> {
     use crate::geometry::Shape as _;
-    // Identical closed contours need no curve subdivision or polygon
-    // reconstruction. Difference and XOR cancel exactly.
-    if subject.elements() == clip.elements() && simple_closed_contour(subject).is_some() {
+    // A cyclic change of start node, or a reversed traversal, does not
+    // alter a closed contour. Preserve the subject's original curves.
+    if same_segment_cycle(subject, clip) {
         return Some(match op {
             Op::Weld | Op::Intersect => vec![subject.clone()],
             Op::Trim | Op::Exclude => Vec::new(),
@@ -2138,6 +2174,64 @@ mod tests {
         invalid.line_to((0.0, 1.0));
         invalid.close_path();
         assert!(simple_closed_contour(&invalid).is_none());
+    }
+
+    #[test]
+    fn reversed_identical_cubic_contours_keep_the_subject_geometry() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 15.0).to_path(0.01);
+        let reversed = reverse_closed_contour(&circle).expect("simple cubic path");
+        assert!(same_segment_cycle(&circle, &reversed));
+        assert_eq!(
+            overlay(&circle, &reversed, Op::Weld).elements(),
+            circle.elements()
+        );
+        assert_eq!(
+            overlay(&circle, &reversed, Op::Intersect).elements(),
+            circle.elements()
+        );
+        assert!(overlay(&circle, &reversed, Op::Trim).elements().is_empty());
+        assert!(overlay(&circle, &reversed, Op::Exclude).elements().is_empty());
+    }
+
+    #[test]
+    fn shifted_start_node_of_a_closed_cubic_contour_is_equivalent() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 12.0).to_path(0.01);
+        let paths = subpath_segments(&circle);
+        let segments = &paths.first().expect("one path").0;
+        assert!(segments.len() > 2);
+        let mut shifted = BezPath::new();
+        shifted.move_to(segments[2].start());
+        for i in 0..segments.len() {
+            shifted.push(segments[(i + 2) % segments.len()].as_path_el());
+        }
+        shifted.close_path();
+        assert_ne!(circle.elements(), shifted.elements());
+        assert!(same_segment_cycle(&circle, &shifted));
+        assert_eq!(overlay(&circle, &shifted, Op::Weld).elements(), circle.elements());
+        assert_eq!(
+            overlay(&circle, &shifted, Op::Intersect).elements(),
+            circle.elements()
+        );
+        assert!(overlay(&circle, &shifted, Op::Exclude).elements().is_empty());
+    }
+
+    #[test]
+    fn matching_cycle_rejects_same_endpoints_with_changed_controls() {
+        let mut first = BezPath::new();
+        first.move_to((0.0, 0.0));
+        first.curve_to((3.0, -2.0), (7.0, -2.0), (10.0, 0.0));
+        first.line_to((10.0, 10.0));
+        first.line_to((0.0, 10.0));
+        first.close_path();
+        let mut altered = BezPath::new();
+        altered.move_to((0.0, 0.0));
+        altered.curve_to((3.0, -1.0), (7.0, -1.0), (10.0, 0.0));
+        altered.line_to((10.0, 10.0));
+        altered.line_to((0.0, 10.0));
+        altered.close_path();
+        assert!(!same_segment_cycle(&first, &altered));
     }
 
     #[test]
