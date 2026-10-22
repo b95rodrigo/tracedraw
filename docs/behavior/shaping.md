@@ -42,27 +42,33 @@ the empty result. Simplify also preserves any single simple closed contour
 without changing its node types or control points. This avoids destructive
 flattening where there is no overlap to resolve.
 
-A second, limited crossing solver is available for Weld, Intersect and
-Trim when one simple closed boundary uses only straight segments and the
-other may contain quadratic or cubic segments. It obtains intersections
-in curve parameter space, splits the original path segments at those
-parameters, and joins the selected directed arcs. It retains quadratic
-and cubic control points for cases with unambiguous topology.
+The experimental parametric crossing solver handles Weld, Intersect and
+Trim for two simple closed contours made from straight, quadratic and
+cubic segments. Straight/curve pairs use a direct line intersection.
+Curve/curve pairs isolate potential intersections with recursively split
+Bezier control hulls and refine roots with Newton iterations.
 
-The conservative fallback still covers two intersecting curved boundaries,
-coincident edges, tangencies, junctions at existing nodes, Exclude on
-crossing boundaries, self-intersections, open paths and multi-contour
-shapes. That algorithm flattens curves at 0.02 mm tolerance, so none of
-these cases is yet a general curve-preserving boolean implementation.
-The new solver is source-integrated, not runtime-verified.
+When all crossings and resulting paths are unambiguous, each output edge
+is an original, parameter-split curve segment. The operation does not
+refit polygons into new curves. A bounded work budget, tangent checks,
+closed-loop topology checks and a fill-membership sanity check reject
+uncertain results.
+
+The fallback still applies to coincident edges, tangencies, junctions at
+existing nodes, overlapping/degenerate geometry, Exclude on crossing
+boundaries, self-intersections, open paths and multi-contour shapes.
+Ambiguous inputs use flattened polygons at 0.02 mm tolerance, so this is
+not yet a universally exact curve boolean implementation. This solver
+was source-integrated without runtime compilation or tests.
 
 Regression tests in `crates/core/src/shaping.rs` cover disjoint curves,
 including overlapping bounds, nested curve holes, exact control-point
 retention, winding direction, invalid input rejection and deliberate
 fallback on touching/crossing paths. Additional unexecuted tests cover
-straight/curved crossing contours in both operand orders, operations that
-produce multiple pieces, and tangent-line fallback. These tests have not
-been executed.
+straight/curved crossing contours in both operand orders, two crossing
+cubic circles, four intersections between perpendicular ellipses,
+parametric derivative/control bounds, and tangent fallback. These tests
+have been added but have not been executed.
 
 ## Panel
 

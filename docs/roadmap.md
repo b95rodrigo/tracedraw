@@ -11,9 +11,10 @@ for evidence-based acceptance before calling a version reliable.
    independently checkable and separate current tests from planned gates.
 2. **P0 editor CI**: run the main application package's tests under Xvfb
    as part of the workspace suite before packaging.
-3. **P0 vector quality**: simple contours preserve nodes, and the first
-   curve/straight-edge crossing solver has been integrated with unexecuted
-   regression tests. Two genuinely curved intersecting boundaries, complex
+3. **P0 vector quality**: simple contours preserve nodes and an
+   experimental bounded parametric solver now handles selected crossings
+   between two curved boundaries. Regression scenarios are committed but
+   unexecuted. Robust tangencies, overlapping curves, XOR, complex
    topology and independent output verification remain open.
 4. **P0 interaction and performance**: reproduce selection, clip-frame,
    pan and zoom bugs and add regression/benchmark fixtures.
