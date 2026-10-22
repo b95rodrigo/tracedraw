@@ -15,7 +15,9 @@
 //! expanded effects), groups, artistic text with one font, size and style
 //! per run, bitmaps (24-bit), solid and fountain fills, outlines (width,
 //! caps, joins, dashes, nib, "scale with object", "behind fill") and
-//! uniform transparency. A clip frame holding one bitmap becomes that
+//! uniform transparency. A solitary invert lens on an opaque vector
+//! object uses the observed tagged version-15 lens argument in version
+//! 13+ files (other versions experimental). A clip frame holding one bitmap becomes that
 //! bitmap with the frame as its crop path; eligible vector clip frames
 //! use the native clpt group format (confirmed for version 12; other
 //! versions experimental). Unsupported frames become an unclipped group.
@@ -81,6 +83,48 @@ fn native_clip_frame_shape(frame: &Shape) -> bool {
     }
 }
 
+/// The tagged invert lens record has been independently observed in a
+/// version 15 drawing. Keep this native path deliberately narrow: only
+/// a single lens on an otherwise ordinary opaque vector shape, with no
+/// other live effect or opacity mask, is eligible.
+fn native_invert_lens(shape: &Shape, version: u16) -> bool {
+    version >= 13
+        && shape.opacity >= 0.999
+        && shape.opacity_mask.is_none()
+        && shape.effects.len() == 1
+        && matches!(
+            shape.effects.first(),
+            Some(tracedraw_core::live::Effect::Lens(
+                tracedraw_core::live::Lens::Invert
+            ))
+        )
+        && matches!(
+            &shape.kind,
+            ShapeKind::Rect { .. }
+                | ShapeKind::Ellipse { .. }
+                | ShapeKind::Path { .. }
+                | ShapeKind::Polygon { .. }
+        )
+}
+
+/// Encode the tagged version-13+ transparency argument for an invert
+/// lens, following the observed version-15 record structure. Versions
+/// other than 15 require independent reader validation.
+fn native_invert_lens_arg(identifier: u32) -> Vec<u8> {
+    let mut body = Buf::default();
+    body.u8(1)
+        .u32(identifier)
+        .u8(3)
+        .u8(0)
+        .u8(0)
+        .bytes(&[1, 12, 0, 0, 0, 2, 0, 5, 0])
+        .pad_to(126);
+    let data = body.done();
+    let mut record = Buf::default();
+    record.u32(0x514).u32(data.len() as u32).bytes(&data);
+    record.done()
+}
+
 /// Known fidelity limitations of CDR writing, based on the actual
 /// conversion branches in Writer::object. This is not a full format
 /// compatibility assessment, and the list may be incomplete.
@@ -92,8 +136,10 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
     const MASK: &str = "opacity masks may lose their editable structure";
     const EXPERIMENTAL: &str =
         "native vector clipping layout is unverified in this CDR version";
+    const LENS: &str =
+        "native invert lens layout is unverified in this CDR version";
 
-    let mut found = [false; 6];
+    let mut found = [false; 7];
     let mut pending: Vec<&Shape> = doc.pages.iter()
         .flat_map(|page| page.layers.iter())
         .flat_map(|layer| layer.shapes.iter())
@@ -110,7 +156,13 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
             found[1] = true;
         }
         if !shape.effects.is_empty() {
-            found[2] = true;
+            if native_invert_lens(shape, version) {
+                if version != 15 {
+                    found[6] = true;
+                }
+            } else {
+                found[2] = true;
+            }
         }
         if shape.opacity_mask.is_some() {
             found[4] = true;
@@ -138,7 +190,7 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
             _ => {}
         }
     }
-    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK, EXPERIMENTAL]
+    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK, EXPERIMENTAL, LENS]
         .into_iter()
         .zip(found)
         .filter_map(|(note, present)| present.then_some(note))
@@ -2760,6 +2812,9 @@ struct Writer<'a> {
     /// Link the actual frame object to the clipping group when writing
     /// its loda. Consumed by place() so it cannot leak to another object.
     clip_links: HashMap<tracedraw_core::ShapeId, u32>,
+    /// Single native invert lenses, attached to their original vector
+    /// objects rather than flattened as a generic live effect.
+    invert_lenses: std::collections::HashSet<tracedraw_core::ShapeId>,
     /// Text formats met so far (versions 7 to 15), see [`TextFormat`].
     text_formats: Vec<TextFormat>,
     guid_seed: u64,
@@ -2834,6 +2889,7 @@ impl<'a> Writer<'a> {
             next_spnd: 1,
             clip_groups: Vec::new(),
             clip_links: HashMap::new(),
+            invert_lenses: std::collections::HashSet::new(),
             text_formats: Vec::new(),
             guid_seed: seed,
             guids: master_guids.len() as u64,
@@ -3326,6 +3382,9 @@ impl<'a> Writer<'a> {
             payload.u32(clip).u32(1).u32(0).u32(1);
             args.push((8_005, payload.done()));
         }
+        if self.invert_lenses.remove(&s.id) {
+            args.push((ARG_OPACITY, native_invert_lens_arg(id)));
+        }
         if !s.visible && v.0 >= 21 {
             args.push((ARG_HIDDEN, 1u32.to_le_bytes().to_vec()));
         }
@@ -3444,6 +3503,16 @@ impl<'a> Writer<'a> {
             return self.object(&group, centre, depth);
         }
         if !s.effects.is_empty() {
+            if native_invert_lens(s, self.v.0) {
+                let mut base = s.clone();
+                base.effects.clear();
+                self.invert_lenses.insert(base.id);
+                let result = self.object(&base, centre, depth + 1);
+                // Never leak a pending record onto another shape if
+                // the source kind was rejected by the object writer.
+                self.invert_lenses.remove(&base.id);
+                return result;
+            }
             let ev = tracedraw_core::live::evaluate(s);
             let mut all: Vec<Shape> = ev.below.clone();
             let mut main = ev.main.clone();
