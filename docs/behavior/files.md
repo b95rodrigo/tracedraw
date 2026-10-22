@@ -52,6 +52,24 @@ One window, 760 px wide, the same on every system:
   file name, type, version and properties, and says the browser saves
   the file in its downloads folder.
 
+## CDR preservation limitations
+
+The ZIP package metadata includes names from nested groups and clipping
+frames, including text inside those objects. Versions 14 and 15 also
+index the font families used by nested text. This metadata is an index,
+not a guarantee that every live object is faithfully encoded in the
+native document stream.
+
+The current writer preserves many ordinary vector paths, but a clipping
+frame containing non-bitmap artwork is still approximated as a group
+without its hard clipping semantics. Certain live effects and advanced
+text features can also differ after reopening. Prefer `.tdraw` to retain
+a fully editable original while interoperability is being improved.
+
+Source regression tests for nested metadata, style-string escaping
+and compound editable Bézier paths are committed but unexecuted.
+Opening the written file in an independent program remains a release gate.
+
 ## `.cdr` versions
 
 A program opens `.cdr` files of its own version and older ones, so the
