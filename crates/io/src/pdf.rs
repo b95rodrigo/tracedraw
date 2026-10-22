@@ -688,8 +688,12 @@ impl PageWriter<'_> {
                 self.gstates.push((name.clone(), id));
                 let _ = writeln!(self.content, "/{name} gs");
             }
+            // Clip frames use the same even-odd rule as the on-screen
+            // renderer and the corresponding SVG clipPath. Compound paths
+            // must preserve their inner holes even if both rings share
+            // the same winding direction.
             self.path_ops(&(transform * frame.page_path()));
-            self.content.push_str("W n\n");
+            self.content.push_str("W* n\n");
             for c in contents {
                 self.shape(c, transform);
             }
@@ -2832,6 +2836,54 @@ mod text_tests {
     fn extract(bytes: &[u8]) -> String {
         let doc = lopdf::Document::load_mem(bytes).expect("parses");
         doc.extract_text(&[1]).expect("text")
+    }
+
+    #[test]
+    fn pdf_compound_clip_frame_uses_evenodd_and_retains_bezier_commands() {
+        let mut doc = Document::new("Compound Clip", tracedraw_core::Size::new(80.0, 80.0));
+        let layer = doc.pages[0].layers[0].id;
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.curve_to((10.0, -5.0), (30.0, -5.0), (40.0, 0.0));
+        path.line_to((40.0, 40.0));
+        path.line_to((0.0, 40.0));
+        path.close_path();
+        path.move_to((10.0, 10.0));
+        path.line_to((30.0, 10.0));
+        path.line_to((30.0, 30.0));
+        path.line_to((10.0, 30.0));
+        path.close_path();
+
+        let mut frame = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Path { path, closed: true },
+        );
+        frame.stroke = None;
+        let mut content = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        content.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        content.stroke = None;
+        let clip = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![content],
+            },
+        );
+        doc.layer_mut(layer).expect("layer").shapes.push(clip);
+        let exported = document_to_pdf(&doc);
+        let parsed = lopdf::Document::load_mem(&exported).expect("parse PDF");
+        assert_eq!(parsed.get_pages().len(), 1);
+        let text = inflated(&exported);
+        assert!(text.contains("W* n\n"), "expected even-odd clipping in PDF stream");
+        assert!(!text.contains("W n\n"), "unexpected non-zero clipping in PDF stream");
+        assert!(text.lines().any(|line| line.ends_with(" c")), "cubic path must stay vector");
     }
 
     #[test]
