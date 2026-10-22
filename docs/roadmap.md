@@ -35,7 +35,10 @@ for evidence-based acceptance before calling a version reliable.
    editable vector geometry while retaining this native alpha.
    Combined live-effect controls are not retained. Contour, block
    shadow and extrusion expansions now keep their resulting vector
-   components within one group. The effect controls are still lost.
+   components within one group. Simple unblurred drop shadows may be
+   exported as editable vector silhouettes. Unsupported soft shadows,
+   overprint flags and advanced paint are now reported as losses.
+   The effect controls are still lost.
    Versions 13-15 warn about unreliable opacity. Complex gradients
    use a stop-weighted mean; accurate live mask stacks remain open.
    Independently inspect recent CDR files, complex text, ICC profiles,
