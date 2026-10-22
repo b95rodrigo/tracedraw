@@ -51,6 +51,12 @@ exceptions, shown disabled so the layout stays complete:
   members of the ZIP container), the code pages of text before
   version 12, and the `arrx` arrowheads of newer files (one version 21
   sample).
+- Still open in the writer: a clip frame containing non-bitmap objects
+  is represented as an ordinary group without the clipping operation.
+  Native editability and visual fidelity of such frames cannot be
+  promised on export; the original `.tdraw` must be retained. ZIP package
+  font/object-name metadata now visits frame descendants, but that does
+  not change this container limitation.
 - Still open in the reader: splines (0x26 seen only as connector lines, which
   are read), PostScript (6) fills, envelopes of version 3 text, version 3 fill types 6, 7 and 10, text of version 4, tabs,
   bullets and drop caps from `stlt` (tables skipped by size), the `ftil`

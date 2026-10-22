@@ -792,31 +792,46 @@ fn png_to_bmp(png: &[u8]) -> Option<Vec<u8>> {
     Some(b)
 }
 
+/// Visit document objects that contribute names or fonts to package
+/// metadata. A clipping frame contains both a frame shape and normal
+/// document children; neither is a flat top-level layer object.
+fn visit_metadata_shapes(shapes: &[Shape], visit: &mut impl FnMut(&Shape)) {
+    // Use an explicit stack because artwork can contain deeply nested
+    // groups. Preserve stable visual order for collected metadata.
+    let mut pending: Vec<&Shape> = shapes.iter().rev().collect();
+    while let Some(shape) = pending.pop() {
+        visit(shape);
+        match &shape.kind {
+            ShapeKind::Group { children } => {
+                pending.extend(children.iter().rev());
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                pending.extend(contents.iter().rev());
+                pending.push(frame);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// `metadata/metadata.xml` of version 14 and 15 packages: a summary of
 /// the drawing (fonts used, title, the version that wrote it, pages,
 /// layers and the first page's size in coordinate units).
 fn summary_xml(v: Ver, doc: &Document) -> String {
     let mut fonts: Vec<String> = Vec::new();
-    fn walk(shapes: &[tracedraw_core::Shape], fonts: &mut Vec<String>) {
-        for s in shapes {
-            match &s.kind {
-                tracedraw_core::ShapeKind::Text { spans, .. } => {
-                    for sp in spans {
-                        if !fonts.contains(&sp.font_family) {
-                            fonts.push(sp.font_family.clone());
-                        }
-                    }
-                }
-                tracedraw_core::ShapeKind::Group { children } => walk(children, fonts),
-                _ => {}
-            }
-        }
-    }
     let mut layers = 0;
     for p in &doc.pages {
         for l in &p.layers {
             layers += 1;
-            walk(&l.shapes, &mut fonts);
+            visit_metadata_shapes(&l.shapes, &mut |shape| {
+                if let ShapeKind::Text { spans, .. } = &shape.kind {
+                    for span in spans {
+                        if !fonts.contains(&span.font_family) {
+                            fonts.push(span.font_family.clone());
+                        }
+                    }
+                }
+            });
         }
     }
     fonts.sort();
@@ -980,22 +995,16 @@ fn metadata_xml(v: Ver, doc: &Document) -> String {
 fn textinfo_xml(doc: &Document) -> String {
     let mut objects: Vec<String> = Vec::new();
     let mut layers: Vec<String> = Vec::new();
-    fn names(shapes: &[tracedraw_core::Shape], out: &mut Vec<String>) {
-        for s in shapes {
-            if let Some(n) = s.name.as_deref().filter(|n| !n.is_empty()) {
-                out.push(n.to_string());
-            }
-            if let tracedraw_core::ShapeKind::Group { children } = &s.kind {
-                names(children, out);
-            }
-        }
-    }
     for p in &doc.pages {
         for l in &p.layers {
             if !layers.contains(&l.name) {
                 layers.push(l.name.clone());
             }
-            names(&l.shapes, &mut objects);
+            visit_metadata_shapes(&l.shapes, &mut |shape| {
+                if let Some(name) = shape.name.as_deref().filter(|name| !name.is_empty()) {
+                    objects.push(name.to_string());
+                }
+            });
         }
     }
     objects.sort();
@@ -2505,11 +2514,33 @@ fn run_style_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
     format!("{{{}}}", character_json(sp, fill))
 }
 
+/// Encode user-supplied font family names as JSON string contents.
+/// Quoting backslashes alone is not sufficient: tabs, line breaks and
+/// other control code points would corrupt style records.
+fn json_string_contents(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < '\u{20}' => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The `character` member of a style string.
 fn character_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
     let weight = if sp.bold { 4096 } else { 64 };
     let size = (sp.size_pt * 254000.0 / 72.0).round() as i64;
-    let family = sp.font_family.replace('\\', "\\\\").replace('"', "\\\"");
+    let family = json_string_contents(&sp.font_family);
     let font = format!(
         r#"{{"font":"{family}","size":"{size}","weight":"{weight}","italic":"{}","underline":"{}","strikeout":"{}"}}"#,
         u8::from(sp.italic),
