@@ -236,7 +236,7 @@ fn write_unlinked(
         let clip_id = format!("clip{}", shape.id.raw());
         let _ = writeln!(
             defs,
-            "    <clipPath id=\"{clip_id}\"><path d=\"{}\"/></clipPath>",
+            "    <clipPath id=\"{clip_id}\"><path clip-rule=\"evenodd\" d=\"{}\"/></clipPath>",
             path_data(&(transform * frame.page_path()))
         );
         let _ = writeln!(
@@ -675,6 +675,65 @@ fn escape(s: &str) -> String {
 mod tests {
     use super::*;
     use tracedraw_core::{geometry::Rect, Color, Document, Stroke};
+
+    #[test]
+    fn compound_clip_frame_exports_evenodd_and_keeps_cubic_paths() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let clip_id = doc.ids_mut().shape();
+        let mut frame_path = tracedraw_core::BezPath::new();
+        frame_path.move_to((0.0, 0.0));
+        frame_path.curve_to((10.0, -5.0), (30.0, -5.0), (40.0, 0.0));
+        frame_path.line_to((40.0, 40.0));
+        frame_path.line_to((0.0, 40.0));
+        frame_path.close_path();
+        // The inner and outer rings have the same winding direction.
+        // Even-odd is necessary to preserve the intended cut-out.
+        frame_path.move_to((10.0, 10.0));
+        frame_path.line_to((30.0, 10.0));
+        frame_path.line_to((30.0, 30.0));
+        frame_path.line_to((10.0, 30.0));
+        frame_path.close_path();
+        let mut frame = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Path {
+                path: frame_path,
+                closed: true,
+            },
+        );
+        frame.stroke = None;
+        let mut contents = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        contents.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        contents.stroke = None;
+        let clip = Shape::new(
+            clip_id,
+            ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![contents],
+            },
+        );
+        doc.layer_mut(layer).expect("layer").shapes.push(clip);
+        let svg = page_to_svg(&doc, 0);
+        let definition = svg
+            .lines()
+            .find(|line| line.contains(&format!("<clipPath id=\"clip{}\"", clip_id.raw())))
+            .expect("clip path definition");
+        assert!(definition.contains("clip-rule=\"evenodd\""), "{definition}");
+        // Clip edges stay vector, including their original cubic controls
+        // and the two closed subpaths of the even-odd compound contour.
+        assert!(definition.contains("C"), "{definition}");
+        assert!(definition.matches('M').count() >= 2, "{definition}");
+        assert_eq!(definition.matches('Z').count(), 2);
+        assert!(!definition.contains("<image"), "{definition}");
+        assert!(svg.contains(&format!("clip-path=\"url(#clip{})\"", clip_id.raw())));
+    }
 
     #[test]
     fn opacity_masks_are_svg_masks() {

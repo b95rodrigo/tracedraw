@@ -19,8 +19,10 @@ for evidence-based acceptance before calling a version reliable.
    independent output verification remain open.
 4. **P0 interaction and performance**: reproduce selection, clip-frame,
    pan and zoom bugs and add regression/benchmark fixtures.
-5. **P0 interchange and production**: test representative recent CDR
-   files, text, ICC profiles, separations and PDF/X with independent readers.
+5. **P0 interchange and production**: retain compound clipping holes
+   in SVG/PDF vector exports and add source regression cases; then inspect
+   representative recent CDR files, text, ICC profiles, separations and
+   PDF/X with independent readers. New export checks are not yet executed.
 
 A milestone's implementation being marked done is not a substitute for
 this quality sequence. Current priorities are in the compatibility matrix.

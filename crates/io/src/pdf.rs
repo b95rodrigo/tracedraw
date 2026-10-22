@@ -286,7 +286,7 @@ fn pdf_text(s: &str) -> String {
         .map(|c| match c {
             '(' => "\\(".to_string(),
             ')' => "\\)".to_string(),
-            '\\' => "\\\\".to_string(),
+            '\\' => "\\\".to_string(),
             c if (c as u32) < 128 => c.to_string(),
             c => format!("\\{:03o}", (c as u32).min(255)),
         })
@@ -688,8 +688,12 @@ impl PageWriter<'_> {
                 self.gstates.push((name.clone(), id));
                 let _ = writeln!(self.content, "/{name} gs");
             }
+            // Clip frames use the same even-odd rule as the on-screen
+            // renderer and the corresponding SVG clipPath. Compound paths
+            // must preserve their inner holes even if both rings share
+            // the same winding direction.
             self.path_ops(&(transform * frame.page_path()));
-            self.content.push_str("W n\n");
+            self.content.push_str("W* n\n");
             for c in contents {
                 self.shape(c, transform);
             }
@@ -2832,6 +2836,91 @@ mod text_tests {
     fn extract(bytes: &[u8]) -> String {
         let doc = lopdf::Document::load_mem(bytes).expect("parses");
         doc.extract_text(&[1]).expect("text")
+    }
+
+    #[test]
+    fn boolean_curved_hole_remains_vector_in_svg_and_pdf() {
+        use tracedraw_core::geometry::Shape as _;
+        use tracedraw_core::shaping::{overlay, Op};
+        let mut doc = Document::new("Editable Hole", tracedraw_core::Size::new(100.0, 100.0));
+        let layer = doc.pages[0].layers[0].id;
+        let outer = tracedraw_core::geometry::Circle::new((40.0, 40.0), 30.0)
+            .to_path(0.01);
+        let inner = tracedraw_core::geometry::Circle::new((40.0, 40.0), 12.0)
+            .to_path(0.01);
+        let cut = overlay(&outer, &inner, Op::Trim);
+        let cubic_count = cut.elements().iter()
+            .filter(|el| matches!(el, PathEl::CurveTo(_, _, _))).count();
+        assert!(cubic_count >= 8, "nested subtraction must preserve cubic handles");
+        let mut shape = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Path { path: cut, closed: true },
+        );
+        shape.fill = Fill::Solid(Color::BLACK);
+        shape.stroke = None;
+        doc.layer_mut(layer).expect("layer").shapes.push(shape);
+
+        let svg = crate::svg::page_to_svg(&doc, 0);
+        let d = svg.lines().find(|line| line.contains("fill-rule=\"evenodd\""))
+            .expect("compound path in SVG");
+        assert_eq!(d.matches('M').count(), 2, "{d}");
+        assert_eq!(d.matches('Z').count(), 2, "{d}");
+        assert!(d.matches('C').count() >= cubic_count, "{d}");
+
+        let bytes = document_to_pdf(&doc);
+        let pdf = lopdf::Document::load_mem(&bytes).expect("PDF parses");
+        assert_eq!(pdf.get_pages().len(), 1);
+        let decoded = inflated(&bytes);
+        assert!(decoded.lines().filter(|line| line.ends_with(" c")).count() >= cubic_count);
+        assert!(decoded.contains("f*\n"), "compound vector must use even-odd fill");
+    }
+
+    #[test]
+    fn pdf_compound_clip_frame_uses_evenodd_and_retains_bezier_commands() {
+        let mut doc = Document::new("Compound Clip", tracedraw_core::Size::new(80.0, 80.0));
+        let layer = doc.pages[0].layers[0].id;
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.curve_to((10.0, -5.0), (30.0, -5.0), (40.0, 0.0));
+        path.line_to((40.0, 40.0));
+        path.line_to((0.0, 40.0));
+        path.close_path();
+        path.move_to((10.0, 10.0));
+        path.line_to((30.0, 10.0));
+        path.line_to((30.0, 30.0));
+        path.line_to((10.0, 30.0));
+        path.close_path();
+
+        let mut frame = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Path { path, closed: true },
+        );
+        frame.stroke = None;
+        let mut content = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        content.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        content.stroke = None;
+        let clip = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![content],
+            },
+        );
+        doc.layer_mut(layer).expect("layer").shapes.push(clip);
+        let exported = document_to_pdf(&doc);
+        let parsed = lopdf::Document::load_mem(&exported).expect("parse PDF");
+        assert_eq!(parsed.get_pages().len(), 1);
+        let text = inflated(&exported);
+        assert!(text.contains("W* n\n"), "expected even-odd clipping in PDF stream");
+        assert!(!text.contains("W n\n"), "unexpected non-zero clipping in PDF stream");
+        assert!(text.lines().any(|line| line.ends_with(" c")), "cubic path must stay vector");
     }
 
     #[test]

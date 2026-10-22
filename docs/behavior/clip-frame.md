@@ -10,6 +10,15 @@ object, kept whole with its own transform, fill and outline; the
 contents keep their own page-space transforms. The frame's fill and
 outline are drawn, the contents are clipped to the frame's path.
 
+A frame may be a compound vector path with several closed contours. Its
+contents use even-odd clipping: an inner contour forms a hole even when
+its drawing direction matches the outer contour. The normal SVG exporter
+writes `clip-rule="evenodd"` inside the SVG clip path; PDF uses the
+equivalent `W*` clipping operator. The frame's cubic curves stay vector.
+
+Opacity masks are a separate mode and do not use the normal hard-clip
+export path. They retain the format-specific behavior described below.
+
 ## Commands
 
 - Place Inside Frame: with contents selected, click the frame; the
@@ -82,3 +91,10 @@ in place and lock work as for any clip frame. One undo step each.
   `app::tests::clip_frames_turn_into_opacity_masks_and_back`.
 - `frame_type::tests::empty_clip_frames_come_and_go_in_place`,
   `frame_type::tests::an_object_gives_way_to_an_empty_text_frame_of_its_size`.
+
+- `svg::tests::compound_clip_frame_exports_evenodd_and_keeps_cubic_paths`.
+- `pdf::text_tests::pdf_compound_clip_frame_uses_evenodd_and_retains_bezier_commands`.
+- `pdf::text_tests::boolean_curved_hole_remains_vector_in_svg_and_pdf`.
+
+The last three tests have been committed but not executed. Independently
+reopen and inspect exported artwork before claiming output fidelity.
