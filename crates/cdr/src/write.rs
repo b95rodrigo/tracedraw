@@ -68,13 +68,15 @@ pub fn versions() -> std::ops::RangeInclusive<u16> {
 /// conversion branches in Writer::object. This is not a full format
 /// compatibility assessment, and the list may be incomplete.
 pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> {
-    const FRAME: &str = "non-bitmap clipping frames lose their clipping";
+    const FRAME: &str = "unsupported clipping frames lose their clipping";
     const HIDDEN: &str = "some hidden objects are omitted";
     const EFFECTS: &str = "live effects are expanded into static artwork";
     const PARAGRAPH: &str = "paragraph text frames lose their editable framing";
     const MASK: &str = "opacity masks may lose their editable structure";
+    const EXPERIMENTAL: &str =
+        "native vector clipping layout is unverified in this CDR version";
 
-    let mut found = [false; 5];
+    let mut found = [false; 6];
     let mut pending: Vec<&Shape> = doc.pages.iter()
         .flat_map(|page| page.layers.iter())
         .flat_map(|layer| layer.shapes.iter())
@@ -99,11 +101,25 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
         match &shape.kind {
             ShapeKind::Group { children } => pending.extend(children.iter()),
             ShapeKind::ClipFrame { frame, contents } => {
-                if !(contents.len() == 1
+                let bitmap_crop = contents.len() == 1
                     && matches!(&contents[0].kind, ShapeKind::Bitmap { .. })
-                    && contents[0].effects.is_empty())
-                {
+                    && contents[0].effects.is_empty();
+                let native_vector = version >= 12
+                    && !contents.is_empty()
+                    && frame.visible
+                    && frame.effects.is_empty()
+                    && frame.opacity_mask.is_none()
+                    && matches!(
+                        &frame.kind,
+                        ShapeKind::Rect { .. }
+                            | ShapeKind::Ellipse { .. }
+                            | ShapeKind::Path { .. }
+                            | ShapeKind::Polygon { .. }
+                    );
+                if !bitmap_crop && !native_vector {
                     found[0] = true;
+                } else if native_vector && !bitmap_crop && version != 12 {
+                    found[5] = true;
                 }
                 pending.push(frame);
                 pending.extend(contents.iter());
@@ -112,7 +128,7 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
             _ => {}
         }
     }
-    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK]
+    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK, EXPERIMENTAL]
         .into_iter()
         .zip(found)
         .filter_map(|(note, present)| present.then_some(note))
@@ -3493,7 +3509,9 @@ impl<'a> Writer<'a> {
                 let native = v.0 >= 12
                     && depth < 55
                     && !contents.is_empty()
+                    && frame.visible
                     && frame.effects.is_empty()
+                    && frame.opacity_mask.is_none()
                     && matches!(
                         &frame.kind,
                         ShapeKind::Rect { .. }
