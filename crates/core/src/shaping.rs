@@ -767,6 +767,42 @@ fn ambiguous_shared_boundary(a: &kurbo::PathSeg, b: &kurbo::PathSeg) -> bool {
         return true;
     }
 
+    // A subsegment may lie on another curve without sharing the original
+    // segment endpoints. Such spans have infinitely many intersections,
+    // not two transverse crossings, and must not enter graph stitching.
+    // Require two separated, tangent-aligned samples to distinguish a
+    // coincident span from one isolated transverse crossing.
+    if !matches!((a, b), (kurbo::PathSeg::Line(_), kurbo::PathSeg::Line(_)))
+        && bounds_touch(control_bounds(a), control_bounds(b), 1e-6)
+    {
+        use kurbo::ParamCurveNearest as _;
+        let matches_span = |source: &kurbo::PathSeg, target: &kurbo::PathSeg| {
+            let mut matches = 0;
+            for t in [0.125, 0.375, 0.625, 0.875] {
+                let point = source.eval(t);
+                let nearest = target.nearest(point, 1e-6);
+                if nearest.distance_sq > 1e-10 {
+                    continue;
+                }
+                let first = curve_velocity(source, t);
+                let second = curve_velocity(target, nearest.t);
+                let lengths = first.hypot() * second.hypot();
+                if lengths > 1e-12
+                    && cross_vectors(first, second).abs() <= lengths * 1e-3
+                {
+                    matches += 1;
+                    if matches >= 2 {
+                        return true;
+                    }
+                }
+            }
+            false
+        };
+        if matches_span(a, b) || matches_span(b, a) {
+            return true;
+        }
+    }
+
     if let (kurbo::PathSeg::Line(first), kurbo::PathSeg::Line(second)) = (a, b) {
         let d = first.p1 - first.p0;
         let e = second.p1 - second.p0;
@@ -2319,6 +2355,44 @@ mod tests {
         assert!(result.contains(Point::new(2.0, 5.0)));
         assert!(result.contains(Point::new(12.0, 5.0)));
         assert!(!result.contains(Point::new(7.0, 5.0)));
+    }
+
+    #[test]
+    fn partially_coincident_cubic_subsegments_use_polygon_fallback() {
+        let whole = kurbo::PathSeg::Cubic(kurbo::CubicBez::new(
+            (0.0, 0.0), (3.0, 12.0), (9.0, 12.0), (12.0, 0.0),
+        ));
+        let middle = whole.subsegment(0.2..0.8);
+        assert!(ambiguous_shared_boundary(&whole, &middle));
+        assert!(ambiguous_shared_boundary(&middle, &whole));
+
+        let mut top = BezPath::new();
+        top.move_to(whole.start());
+        top.push(whole.as_path_el());
+        top.line_to((12.0, -10.0));
+        top.line_to((0.0, -10.0));
+        top.close_path();
+
+        let mut partial = BezPath::new();
+        partial.move_to(middle.start());
+        partial.push(middle.as_path_el());
+        partial.line_to((middle.end().x, -5.0));
+        partial.line_to((middle.start().x, -5.0));
+        partial.close_path();
+
+        assert!(exact_curve_crossing(&top, &partial, Op::Trim).is_none());
+        assert!(exact_curve_crossing(&top, &partial, Op::Exclude).is_none());
+    }
+
+    #[test]
+    fn unrelated_curves_do_not_trigger_partial_overlap_detection() {
+        let arc = kurbo::PathSeg::Cubic(kurbo::CubicBez::new(
+            (0.0, 0.0), (3.0, 12.0), (9.0, 12.0), (12.0, 0.0),
+        ));
+        let other = kurbo::PathSeg::Cubic(kurbo::CubicBez::new(
+            (0.0, 6.0), (4.0, -7.0), (8.0, -7.0), (12.0, 6.0),
+        ));
+        assert!(!ambiguous_shared_boundary(&arc, &other));
     }
 
     #[test]

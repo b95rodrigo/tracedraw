@@ -61,10 +61,13 @@ uncertain results.
 
 The fallback still applies to coincident edges, tangencies, junctions at
 existing nodes, overlapping/degenerate geometry, self-intersections, open
-paths and multi-contour shapes. A preflight check now rejects shared
+paths and multi-contour shapes. A preflight check rejects shared
 vertices, identical/reversed segments and overlapping collinear line
 spans as ambiguous rather than treating them as transverse crossings.
-It does not yet resolve general coincident curved spans or tangencies.
+It also samples nearby aligned tangents to detect some partially
+coincident curved spans, routing them to polygon fallback. This is a
+conservative detection mechanism, not an exact coincident-curve solver:
+short overlaps, tangencies and complicated path contacts remain open.
 Ambiguous inputs use flattened polygons at 0.02 mm tolerance, so this
 is not yet a universally exact curve boolean implementation. This
 solver was source-integrated without runtime compilation or tests.
@@ -77,8 +80,9 @@ straight/curved crossing contours in both operand orders, two crossing
 cubic circles, four intersections between perpendicular ellipses,
 parametric derivative/control bounds, tangent fallback, two curved
 XOR crescents, curve/straight XOR, shared-edge/vertex fallback,
-reversed curves and shifted-start-node equivalence. These tests have
-been added but have not been executed.
+reversed curves, shifted-start-node equivalence, partial cubic
+overlaps and unrelated curve controls. These tests have been added but
+have not been executed.
 
 ## Panel
 
