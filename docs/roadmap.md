@@ -15,8 +15,10 @@ for evidence-based acceptance before calling a version reliable.
    experimental bounded parametric solver now handles selected crossings
    between two curved boundaries. Regression scenarios are committed but
    unexecuted. Crossing XOR now composes two separately membership-checked Trim paths.
-   Robust tangencies, coincident curved spans, complex topology and
-   independent output verification remain open.
+   Some partially coincident curved spans are now detected and sent
+   to polygon fallback. Robust tangencies, exact overlapping-curve
+   reconstruction, complex topology and independent output verification
+   remain open.
 4. **P0 interaction and performance**: reproduce selection, clip-frame,
    pan and zoom bugs and add regression/benchmark fixtures.
 5. **P0 interchange and production**: retain compound clipping holes
