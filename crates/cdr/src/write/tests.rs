@@ -2241,6 +2241,133 @@ fn unsupported_or_stacked_lens_effects_remain_flagged_as_lossy() {
 }
 
 #[test]
+fn flat_hard_drop_shadow_exports_two_editable_vector_shapes() {
+    use tracedraw_core::live::MergeMode;
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(15.0, 15.0, 65.0, 45.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.name = Some("Original garment artwork".into());
+    shape.fill = Fill::Solid(Color::cmyk_pct(0.0, 90.0, 20.0, 0.0));
+    shape.stroke = None;
+    shape.shadow = Some(tracedraw_core::Shadow {
+        offset: tracedraw_core::geometry::Vec2::new(8.0, -5.0),
+        opacity: 0.75,
+        blur: 0.0,
+        color: Color::cmyk_pct(0.0, 0.0, 0.0, 80.0),
+        merge: MergeMode::Normal,
+        ..Default::default()
+    });
+    for version in [12u16, 16, 21, 27] {
+        let parts = editable_hard_shadow(&shape, version)
+            .expect("plain hard shadow has an exact vector silhouette");
+        assert!(matches!(&parts.kind, ShapeKind::Path { .. }));
+        assert_eq!(parts.fill, Fill::Solid(Color::cmyk_pct(0.0, 0.0, 0.0, 80.0)));
+        assert!((parts.opacity - 0.75).abs() < 1e-9);
+        let doc = doc_with(vec![shape.clone()]);
+        let encoded = document_to_cdr_version(&doc, version);
+        let (back, report) = crate::open_bytes(&encoded, "hard-shadow")
+            .expect("reopen hard shadow");
+        assert_eq!(report.skipped_objects, 0, "{version}: {:?}", report.warnings);
+        let outer = &back.pages[0].layers[0].shapes;
+        assert_eq!(outer.len(), 1, "{version}: one selectable group");
+        let ShapeKind::Group { children } = &outer[0].kind else {
+            panic!("{version}: expected editable group, got {:?}", outer[0].kind);
+        };
+        assert_eq!(children.len(), 2, "{version}: shadow and artwork");
+        assert!(matches!(&children[0].kind, ShapeKind::Path { .. }), "{version}");
+        assert_eq!(
+            children[0].fill,
+            Fill::Solid(Color::cmyk_pct(0.0, 0.0, 0.0, 80.0)),
+            "{version}: shadow CMYK"
+        );
+        assert!((children[0].opacity - 0.75).abs() < 0.002, "{version}");
+        let original = &children[1];
+        assert_eq!(original.name.as_deref(), Some("Original garment artwork"));
+        assert_eq!(original.fill, shape.fill, "{version}: source CMYK");
+        assert!(original.shadow.is_none(), "{version}: no linked shadow controls");
+        let b = children[0].bounds();
+        assert!((b.x0 - 23.0).abs() < 0.02 && (b.y0 - 10.0).abs() < 0.02,
+            "{version}: displaced silhouette {b:?}");
+        let warnings = export_fidelity_notes(&doc, version);
+        assert!(warnings.iter().any(|note| note.contains("hard drop shadow")),
+            "{version}: {warnings:?}");
+        assert!(!warnings.iter().any(|note| note.contains("omitted")),
+            "{version}: {warnings:?}");
+    }
+}
+
+#[test]
+fn soft_and_special_blend_shadows_are_reported_not_silently_lost() {
+    use tracedraw_core::live::MergeMode;
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 50.0, 35.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    let mut shadow = tracedraw_core::Shadow {
+        blur: 2.0,
+        opacity: 0.6,
+        merge: MergeMode::Normal,
+        ..Default::default()
+    };
+    shape.shadow = Some(shadow);
+    assert!(editable_hard_shadow(&shape, 21).is_none());
+    assert!(export_fidelity_notes(&doc_with(vec![shape.clone()]), 21)
+        .iter().any(|note| note.contains("omitted")));
+    shadow.blur = 0.0;
+    shadow.merge = MergeMode::Multiply;
+    shape.shadow = Some(shadow);
+    assert!(editable_hard_shadow(&shape, 21).is_none());
+    assert!(export_fidelity_notes(&doc_with(vec![shape.clone()]), 21)
+        .iter().any(|note| note.contains("omitted")));
+    shadow.merge = MergeMode::Normal;
+    shape.shadow = Some(shadow);
+    assert!(editable_hard_shadow(&shape, 14).is_none(),
+        "opaque records for v13-v15 cannot store alpha");
+    assert!(export_fidelity_notes(&doc_with(vec![shape]), 14)
+        .iter().any(|note| note.contains("omitted")));
+}
+
+#[test]
+fn print_overprint_and_special_paint_losses_are_detected() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 50.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.overprint_fill = true;
+    shape.overprint_outline = true;
+    shape.extra_fills.push(Fill::Solid(Color::rgb8(255, 0, 0)));
+    shape.extra_strokes.push(Stroke::new(Color::BLACK, 2.0));
+    if let Some(stroke) = shape.stroke.as_mut() {
+        stroke.fill = Some(Box::new(Fill::Solid(Color::WHITE)));
+    }
+    let notes = export_fidelity_notes(&doc_with(vec![shape]), 27);
+    assert!(notes.iter().any(|note| note.contains("overprint")), "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("special variable-width")),
+        "{notes:?}");
+    assert!(notes.iter().any(|note| note.contains("additional fills")),
+        "{notes:?}");
+
+    let plain = doc_with(Vec::new());
+    assert!(export_fidelity_notes(&plain, 27).is_empty());
+}
+
+#[test]
 fn generated_contours_block_shadows_and_extrusions_remain_editable_groups() {
     use tracedraw_core::live::Effect;
     let sample = |effect: Effect| {
