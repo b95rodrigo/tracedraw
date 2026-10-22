@@ -42,11 +42,14 @@ the empty result. Simplify also preserves any single simple closed contour
 without changing its node types or control points. This avoids destructive
 flattening where there is no overlap to resolve.
 
-The experimental parametric crossing solver handles Weld, Intersect and
-Trim for two simple closed contours made from straight, quadratic and
-cubic segments. Straight/curve pairs use a direct line intersection.
+The experimental parametric crossing solver handles Weld, Intersect, Trim
+and Exclude for two simple closed contours made from straight, quadratic
+and cubic segments. Straight/curve pairs use a direct line intersection.
 Curve/curve pairs isolate potential intersections with recursively split
-Bezier control hulls and refine roots with Newton iterations.
+Bezier control hulls and refine roots with Newton iterations. For Exclude
+(symmetric difference), it computes and checks both directed Trim results
+separately, then concatenates the editable components. Both differences
+must succeed, or Exclude uses the previous polygon solver.
 
 When all crossings and resulting paths are unambiguous, each output edge
 is an original, parameter-split curve segment. The operation does not
@@ -55,11 +58,14 @@ closed-loop topology checks and a fill-membership sanity check reject
 uncertain results.
 
 The fallback still applies to coincident edges, tangencies, junctions at
-existing nodes, overlapping/degenerate geometry, Exclude on crossing
-boundaries, self-intersections, open paths and multi-contour shapes.
-Ambiguous inputs use flattened polygons at 0.02 mm tolerance, so this is
-not yet a universally exact curve boolean implementation. This solver
-was source-integrated without runtime compilation or tests.
+existing nodes, overlapping/degenerate geometry, self-intersections, open
+paths and multi-contour shapes. A preflight check now rejects shared
+vertices, identical/reversed segments and overlapping collinear line
+spans as ambiguous rather than treating them as transverse crossings.
+It does not yet resolve general coincident curved spans or tangencies.
+Ambiguous inputs use flattened polygons at 0.02 mm tolerance, so this
+is not yet a universally exact curve boolean implementation. This
+solver was source-integrated without runtime compilation or tests.
 
 Regression tests in `crates/core/src/shaping.rs` cover disjoint curves,
 including overlapping bounds, nested curve holes, exact control-point
@@ -67,8 +73,9 @@ retention, winding direction, invalid input rejection and deliberate
 fallback on touching/crossing paths. Additional unexecuted tests cover
 straight/curved crossing contours in both operand orders, two crossing
 cubic circles, four intersections between perpendicular ellipses,
-parametric derivative/control bounds, and tangent fallback. These tests
-have been added but have not been executed.
+parametric derivative/control bounds, tangent fallback, two curved
+XOR crescents, curve/straight XOR and shared-edge/vertex fallback.
+These tests have been added but have not been executed.
 
 ## Panel
 
