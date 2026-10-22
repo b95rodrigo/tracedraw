@@ -1,7 +1,8 @@
 //! Shaping: weld, trim, intersect, simplify, front-minus-back, back-minus-
 //! front and boundary. Clearly separated or nested simple closed paths
-//! retain their original curves. Crossing/complex paths still use flattened
-//! polygons (0.02 mm tolerance); a general curve-aware solver is planned.
+//! retain their original curves. Simple crossing paths can retain their
+//! segments with bounded parametric clipping, while complex/ambiguous
+//! cases still use flattened polygons (0.02 mm tolerance).
 
 use crate::geometry::{BezPath, PathEl, Point};
 use i_overlay::core::fill_rule::FillRule as IFill;
@@ -462,13 +463,248 @@ fn crossing_cycles(edges: &[CurveEdge], intersections: usize) -> Option<Vec<BezP
     Some(shapes)
 }
 
-/// An exact-curve solver for a conservative subset of crossing paths:
-/// one input boundary must consist entirely of straight lines, while the
-/// other may contain lines, quadratics and cubics. Segment-line roots are
-/// computed in curve parameter space, and both boundaries are split into
-/// original parametric pieces. Coincident edges, tangencies, shared nodes,
-/// complicated contours and XOR deliberately use polygon fallback.
-fn exact_curve_line_crossing(
+/// Bounds from the control polygon. A Bezier subsegment stays inside
+/// the convex hull of its control points, including at non-monotone spans.
+fn control_bounds(seg: &kurbo::PathSeg) -> (f64, f64, f64, f64) {
+    let p = seg.start();
+    let mut bounds = (p.x, p.y, p.x, p.y);
+    let mut add = |q: Point| {
+        bounds.0 = bounds.0.min(q.x);
+        bounds.1 = bounds.1.min(q.y);
+        bounds.2 = bounds.2.max(q.x);
+        bounds.3 = bounds.3.max(q.y);
+    };
+    match seg {
+        kurbo::PathSeg::Line(line) => add(line.p1),
+        kurbo::PathSeg::Quad(quad) => {
+            add(quad.p1);
+            add(quad.p2);
+        }
+        kurbo::PathSeg::Cubic(cubic) => {
+            add(cubic.p1);
+            add(cubic.p2);
+            add(cubic.p3);
+        }
+    }
+    bounds
+}
+
+fn bounds_touch(
+    a: (f64, f64, f64, f64),
+    b: (f64, f64, f64, f64),
+    gap: f64,
+) -> bool {
+    a.0 <= b.2 + gap && b.0 <= a.2 + gap
+        && a.1 <= b.3 + gap && b.1 <= a.3 + gap
+}
+
+fn control_polygon_flat(seg: &kurbo::PathSeg, tol: f64) -> bool {
+    let from = seg.start();
+    let to = seg.end();
+    let a = [from.x, from.y];
+    let b = [to.x, to.y];
+    let t2 = tol * tol;
+    match seg {
+        kurbo::PathSeg::Line(_) => true,
+        kurbo::PathSeg::Quad(q) => {
+            point_chord_distance_sq([q.p1.x, q.p1.y], a, b) <= t2
+        }
+        kurbo::PathSeg::Cubic(c) => {
+            point_chord_distance_sq([c.p1.x, c.p1.y], a, b) <= t2
+                && point_chord_distance_sq([c.p2.x, c.p2.y], a, b) <= t2
+        }
+    }
+}
+
+fn curve_velocity(seg: &kurbo::PathSeg, t: f64) -> kurbo::Vec2 {
+    match seg {
+        kurbo::PathSeg::Line(line) => line.p1 - line.p0,
+        kurbo::PathSeg::Quad(quad) => {
+            (quad.p1 - quad.p0) * (2.0 * (1.0 - t))
+                + (quad.p2 - quad.p1) * (2.0 * t)
+        }
+        kurbo::PathSeg::Cubic(cubic) => {
+            let u = 1.0 - t;
+            (cubic.p1 - cubic.p0) * (3.0 * u * u)
+                + (cubic.p2 - cubic.p1) * (6.0 * u * t)
+                + (cubic.p3 - cubic.p2) * (3.0 * t * t)
+        }
+    }
+}
+
+fn cross_vectors(a: kurbo::Vec2, b: kurbo::Vec2) -> f64 {
+    a.x * b.y - a.y * b.x
+}
+
+/// Refine a geometric chord crossing to the original parametric curves.
+/// Reject near-tangencies and unstable Newton steps rather than silently
+/// producing nodes with incorrect topology.
+fn refine_curve_crossing(
+    a: &kurbo::PathSeg,
+    b: &kurbo::PathSeg,
+    mut t: f64,
+    mut u: f64,
+) -> Option<(f64, f64)> {
+    for _ in 0..20 {
+        let delta = b.eval(u) - a.eval(t);
+        let va = curve_velocity(a, t);
+        let vb = curve_velocity(b, u);
+        let la = va.hypot();
+        let lb = vb.hypot();
+        if !la.is_finite() || !lb.is_finite() || la < 1e-12 || lb < 1e-12 {
+            return None;
+        }
+        let det = cross_vectors(va, vb);
+        if det.abs() < 1e-4 * la * lb {
+            return None;
+        }
+        if delta.hypot() < 1e-7 {
+            return Some((t, u));
+        }
+        let dt = cross_vectors(delta, vb) / det;
+        let du = cross_vectors(delta, va) / det;
+        if !dt.is_finite() || !du.is_finite()
+            || !(0.0..=1.0).contains(&(t + dt))
+            || !(0.0..=1.0).contains(&(u + du))
+        {
+            return None;
+        }
+        t += dt;
+        u += du;
+    }
+    ((a.eval(t) - b.eval(u)).hypot() < 1e-7).then_some((t, u))
+}
+
+#[derive(Clone)]
+struct CurveWindow {
+    segment: kurbo::PathSeg,
+    low: f64,
+    high: f64,
+    depth: u8,
+}
+
+impl CurveWindow {
+    fn halve(self) -> (Self, Self) {
+        let middle = (self.low + self.high) * 0.5;
+        let left = Self {
+            segment: self.segment.subsegment(0.0..0.5),
+            low: self.low,
+            high: middle,
+            depth: self.depth + 1,
+        };
+        let right = Self {
+            segment: self.segment.subsegment(0.5..1.0),
+            low: middle,
+            high: self.high,
+            depth: self.depth + 1,
+        };
+        (left, right)
+    }
+}
+
+/// Isolate cubic/quad intersections with bounded subdivision of control
+/// hulls. Only parameter values are approximated: the returned shape
+/// pieces are still exact subsegments of the original curves. An
+/// uncertain root, tangent, overlapping span or exhausted budget returns
+/// None so the caller can use the established polygon algorithm.
+fn curved_pair_roots(
+    a: &kurbo::PathSeg,
+    b: &kurbo::PathSeg,
+) -> Option<Vec<(f64, f64)>> {
+    const FLATNESS: f64 = 1e-7;
+    const LIMIT: usize = 40_000;
+    let mut pending = vec![(
+        CurveWindow { segment: *a, low: 0.0, high: 1.0, depth: 0 },
+        CurveWindow { segment: *b, low: 0.0, high: 1.0, depth: 0 },
+    )];
+    let mut roots: Vec<(f64, f64)> = Vec::new();
+    let mut visited = 0usize;
+    while let Some((left, right)) = pending.pop() {
+        visited += 1;
+        if visited > LIMIT {
+            return None;
+        }
+        let a_bounds = control_bounds(&left.segment);
+        let b_bounds = control_bounds(&right.segment);
+        if !bounds_touch(a_bounds, b_bounds, 1e-9) {
+            continue;
+        }
+        let a_flat = control_polygon_flat(&left.segment, FLATNESS);
+        let b_flat = control_polygon_flat(&right.segment, FLATNESS);
+        if a_flat && b_flat {
+            let p = left.segment.start();
+            let q = right.segment.start();
+            let da = left.segment.end() - p;
+            let db = right.segment.end() - q;
+            let det = cross_vectors(da, db);
+            let chord_len = da.hypot() * db.hypot();
+            if chord_len <= 1e-22 {
+                return None;
+            }
+            if det.abs() < 1e-4 * chord_len {
+                // Reject potential coincident boundaries and tangencies.
+                if (p - q).hypot() < 2e-6
+                    || point_chord_distance_sq([p.x, p.y], [q.x, q.y],
+                        [right.segment.end().x, right.segment.end().y]) < 4e-12
+                {
+                    return None;
+                }
+                continue;
+            }
+            let delta = q - p;
+            let x = cross_vectors(delta, db) / det;
+            let y = cross_vectors(delta, da) / det;
+            if !(-1e-4..=1.0 + 1e-4).contains(&x)
+                || !(-1e-4..=1.0 + 1e-4).contains(&y)
+            {
+                continue;
+            }
+            let ta = left.low + x.clamp(0.0, 1.0) * (left.high - left.low);
+            let tb = right.low + y.clamp(0.0, 1.0) * (right.high - right.low);
+            let (ta, tb) = refine_curve_crossing(a, b, ta, tb)?;
+            if roots.iter().any(|(at, bt)|
+                (*at - ta).abs() < 1e-6 && (*bt - tb).abs() < 1e-6
+            ) {
+                continue;
+            }
+            // Nearby distinct roots are numerically unsafe to sort/split.
+            if roots.iter().any(|(at, bt)|
+                (a.eval(*at) - a.eval(ta)).hypot() < 1e-5
+                    || (b.eval(*bt) - b.eval(tb)).hypot() < 1e-5
+            ) {
+                return None;
+            }
+            roots.push((ta, tb));
+            if roots.len() > 16 {
+                return None;
+            }
+            continue;
+        }
+        if left.depth >= 28 || right.depth >= 28 {
+            return None;
+        }
+        let ax = a_bounds.2 - a_bounds.0;
+        let ay = a_bounds.3 - a_bounds.1;
+        let bx = b_bounds.2 - b_bounds.0;
+        let by = b_bounds.3 - b_bounds.1;
+        if !a_flat && (b_flat || ax.max(ay) >= bx.max(by)) {
+            let (first, second) = left.halve();
+            pending.push((first, right.clone()));
+            pending.push((second, right));
+        } else {
+            let (first, second) = right.halve();
+            pending.push((left.clone(), first));
+            pending.push((left, second));
+        }
+    }
+    Some(roots)
+}
+
+/// Parametric solver for simple closed curve crossings. Both sides may
+/// contain cubic or quadratic segments. A bounded curve/curve root solver
+/// is used if neither segment is a line. Ambiguous topology, tangencies,
+/// coincident spans and crossing XOR use the polygon fallback.
+fn exact_curve_crossing(
     subject: &BezPath,
     clip: &BezPath,
     op: Op,
@@ -483,8 +719,6 @@ fn exact_curve_line_crossing(
     let (b, b_closed) = subpath_segments(clip).pop()?;
     if !a_closed || !b_closed || a.is_empty() || b.is_empty()
         || a.len() > 64 || b.len() > 64
-        || (!a.iter().all(|s| matches!(s, PathSeg::Line(_)))
-            && !b.iter().all(|s| matches!(s, PathSeg::Line(_))))
     {
         return None;
     }
@@ -505,7 +739,7 @@ fn exact_curve_line_crossing(
                     .iter()
                     .map(|h| (h.segment_t, h.line_t))
                     .collect(),
-                _ => return None,
+                _ => curved_pair_roots(sa, sb)?,
             };
             for (ta, tb) in hits {
                 // Do not guess ownership of a vertex shared by segments.
@@ -613,7 +847,7 @@ fn exact_curve_line_crossing(
 /// Combine `subject` and `clip` (both in the same coordinate space).
 pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
     if let Some(parts) = exact_non_crossing_parts(subject, clip, op)
-        .or_else(|| exact_curve_line_crossing(subject, clip, op))
+        .or_else(|| exact_curve_crossing(subject, clip, op))
     {
         return join_exact_paths(&parts);
     }
@@ -633,7 +867,7 @@ pub fn overlay(subject: &BezPath, clip: &BezPath, op: Op) -> BezPath {
 /// of the result (its outline with its holes) a path of its own.
 pub fn overlay_parts(subject: &BezPath, clip: &BezPath, op: Op) -> Vec<BezPath> {
     if let Some(parts) = exact_non_crossing_parts(subject, clip, op)
-        .or_else(|| exact_curve_line_crossing(subject, clip, op))
+        .or_else(|| exact_curve_crossing(subject, clip, op))
     {
         return parts;
     }
@@ -1860,7 +2094,7 @@ mod tests {
             .count();
         assert!(originals > 0);
         for op in [Op::Weld, Op::Intersect, Op::Trim] {
-            let pieces = exact_curve_line_crossing(&circle, &clip, op)
+            let pieces = exact_curve_crossing(&circle, &clip, op)
                 .expect("four clean crossings should keep cubic segments");
             let result = join_exact_paths(&pieces);
             let cubics = result.elements()
@@ -1895,7 +2129,7 @@ mod tests {
         let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
         let subject = Rect::new(-5.0, -15.0, 3.0, 15.0).to_path(0.01);
         for op in [Op::Weld, Op::Intersect, Op::Trim] {
-            let parts = exact_curve_line_crossing(&subject, &circle, op)
+            let parts = exact_curve_crossing(&subject, &circle, op)
                 .expect("clean straight-curve intersections");
             let result = join_exact_paths(&parts);
             assert!(result.elements().iter().any(|el|
@@ -1909,10 +2143,10 @@ mod tests {
         use crate::geometry::Shape as _;
         let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
         let touching = Rect::new(10.0, -15.0, 20.0, 15.0).to_path(0.01);
-        assert!(exact_curve_line_crossing(&circle, &touching, Op::Weld).is_none());
-        assert!(exact_curve_line_crossing(&circle, &touching, Op::Intersect).is_none());
-        assert!(exact_curve_line_crossing(&circle, &touching, Op::Trim).is_none());
-        assert!(exact_curve_line_crossing(&circle, &touching, Op::Exclude).is_none());
+        assert!(exact_curve_crossing(&circle, &touching, Op::Weld).is_none());
+        assert!(exact_curve_crossing(&circle, &touching, Op::Intersect).is_none());
+        assert!(exact_curve_crossing(&circle, &touching, Op::Trim).is_none());
+        assert!(exact_curve_crossing(&circle, &touching, Op::Exclude).is_none());
     }
 
     #[test]
