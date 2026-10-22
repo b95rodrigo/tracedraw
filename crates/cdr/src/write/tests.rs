@@ -2130,6 +2130,117 @@ fn version_16_text_is_one_byte_a_letter_and_reads_back() {
 }
 
 #[test]
+fn invert_lens_round_trips_as_an_editable_cdr_effect() {
+    use tracedraw_core::live::{Effect, Lens};
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut rectangle = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(20.0, 20.0, 65.0, 60.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    rectangle.name = Some("Inversion lens".into());
+    rectangle.fill = Fill::Solid(Color::cmyk_pct(0.0, 0.0, 0.0, 100.0));
+    rectangle.effects.push(Effect::Lens(Lens::Invert));
+    doc.pages[0].layers[0].shapes = vec![rectangle.clone()];
+    doc.set_ids(ids);
+
+    assert!(native_invert_lens(&rectangle, 15));
+    assert!(!native_invert_lens(&rectangle, 12));
+    for version in [13u16, 14, 15, 16, 21, 27] {
+        let data = document_to_cdr_version(&doc, version);
+        let (back, report) = crate::open_bytes(&data, "lens")
+            .expect("read native invert lens");
+        assert_eq!(report.skipped_objects, 0, "{version}: {:?}", report.warnings);
+        let saved = &back.pages[0].layers[0].shapes[0];
+        assert_eq!(saved.effects, vec![Effect::Lens(Lens::Invert)], "{version}");
+        assert_eq!(saved.name.as_deref(), Some("Inversion lens"), "{version}");
+        assert!(matches!(&saved.kind, ShapeKind::Rect { .. } | ShapeKind::Path { .. }));
+        assert!((saved.opacity - 1.0).abs() < 1e-10, "{version}");
+        let notes = export_fidelity_notes(&doc, version);
+        assert!(!notes.iter().any(|n| n.contains("expanded")), "{version}: {notes:?}");
+        if version != 15 {
+            assert!(notes.iter().any(|n| n.contains("invert lens")), "{version}: {notes:?}");
+        }
+    }
+}
+
+#[test]
+fn invert_lens_records_have_tagged_argument_and_unique_identifiers() {
+    use tracedraw_core::live::{Effect, Lens};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut a = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 40.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    a.effects.push(Effect::Lens(Lens::Invert));
+    let mut b = a.clone();
+    b.id = ids.shape();
+    b.transform = Affine::translate((70.0, 0.0));
+    let doc = doc_with(vec![a, b]);
+    let data = document_to_cdr_version(&doc, 15);
+    let (_, tree, riff) = chunk_ids(&data);
+    let mut identifiers = Vec::new();
+    tree.root.walk(&mut |node, _| {
+        if node.is(b"obj ") {
+            node.walk(&mut |part, _| {
+                if part.is(b"loda") {
+                    for (kind, bytes) in loda_args(tree.data(&riff, part)) {
+                        if kind == ARG_OPACITY {
+                            assert_eq!(bytes.get(0..4), Some(&0x514u32.to_le_bytes()[..]));
+                            assert_eq!(bytes.get(4..8), Some(&126u32.to_le_bytes()[..]));
+                            assert_eq!(bytes.get(8), Some(&1u8));
+                            assert_eq!(bytes.get(13), Some(&3u8));
+                            let id: [u8; 4] = bytes.get(9..13)
+                                .and_then(|b| b.try_into().ok())
+                                .expect("lens identifier");
+                            identifiers.push(u32::from_le_bytes(id));
+                        }
+                    }
+                }
+            });
+        }
+    });
+    assert_eq!(identifiers.len(), 2);
+    assert_ne!(identifiers[0], identifiers[1]);
+}
+
+#[test]
+fn unsupported_or_stacked_lens_effects_remain_flagged_as_lossy() {
+    use tracedraw_core::live::{Effect, Lens};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut s = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 40.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    s.effects.push(Effect::Lens(Lens::Invert));
+    let original = doc_with(vec![s.clone()]);
+    assert!(export_fidelity_notes(&original, 12)
+        .iter().any(|n| n.contains("expanded")));
+    s.effects.push(Effect::Lens(Lens::Invert));
+    let stacked = doc_with(vec![s.clone()]);
+    assert!(!native_invert_lens(&s, 15));
+    assert!(export_fidelity_notes(&stacked, 15)
+        .iter().any(|n| n.contains("expanded")));
+    s.effects.pop();
+    s.opacity = 0.6;
+    assert!(!native_invert_lens(&s, 15));
+    assert!(export_fidelity_notes(&doc_with(vec![s]), 15)
+        .iter().any(|n| n.contains("expanded")));
+}
+
+#[test]
 fn graded_transparency_is_written_as_a_gradient_from_16() {
     let mut doc = Document::new("w", Size::new(200.0, 100.0));
     let mut ids = doc.ids().clone();

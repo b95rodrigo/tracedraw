@@ -68,17 +68,23 @@ documentation and one version 12 fixture only. Its use in versions
 the project's own reader can reconstruct this arrangement.
 
 Unsupported frames, open contours and versions before 12 continue
-to use an unclipped group approximation. Certain live effects and
-advanced text features can also differ after reopening. Prefer
-`.tdraw` to retain a fully editable original while interoperability
-is being improved.
+to use an unclipped group approximation. A second narrow native effect
+writer now supports an **invert lens** on one opaque vector object.
+The tagged binary layout is evidenced in version 15 only; its use
+in other versions is experimental and emits a compatibility notice.
+Other lenses, stacked effects and advanced text features can still
+differ after reopening. Prefer `.tdraw` to retain a fully editable
+original while interoperability is being improved.
 
 For known lossy constructs, saving a CDR file now appends a "CDR
 warning" to the status line and writes the details to the application
 log. This does not block the save. It warns about unsupported
 clipping frames, experimental native vector clipping in versions other
 than 12, hidden objects omitted by the target version, expanded live
-effects, paragraph text frame conversion and opacity mask limitations. These source-based warnings are **not exhaustive**; absence
+effects, paragraph text frame conversion and opacity mask limitations.
+A source-supported single native invert lens no longer reports static
+expansion, but versions other than 15 show an unverified-layout notice.
+These source-based warnings are **not exhaustive**; absence
 of a warning does not mean the file has been independently verified.
 
 Source regression tests for nested metadata, style-string escaping,

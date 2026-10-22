@@ -27,6 +27,8 @@ for evidence-based acceptance before calling a version reliable.
    regression checks are committed but unexecuted. Eligible vector
    clipping frames now use native version-12 `clpt` records in source;
    newer formats are experimental and trigger compatibility warnings.
+   A single native invert lens now has a source encoder based on an
+   observed version-15 record; other versions remain unverified.
    Independently inspect recent CDR files, complex text, ICC profiles,
    separations and PDF/X.
 
