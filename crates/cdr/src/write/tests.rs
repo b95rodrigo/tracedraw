@@ -2241,6 +2241,119 @@ fn unsupported_or_stacked_lens_effects_remain_flagged_as_lossy() {
 }
 
 #[test]
+fn solid_transparency_uses_editable_object_opacity_on_known_versions() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 70.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.fill = Fill::Solid(Color::cmyk_pct(0.0, 100.0, 30.0, 0.0));
+    shape.opacity = 0.8;
+    shape.effects.push(Effect::Transparency {
+        mask: Fill::Solid(Color::Gray { v: 0.5 }),
+        merge: MergeMode::Normal,
+        target: 2,
+    });
+    for version in [12u16, 16, 21, 27] {
+        let alpha = native_solid_transparency_alpha(&shape, version)
+            .expect("uniform alpha can be expressed by native records");
+        assert!((alpha - 0.4).abs() < 1e-5, "{version}: {alpha}");
+        let doc = doc_with(vec![shape.clone()]);
+        let bytes = document_to_cdr_version(&doc, version);
+        let (back, report) = crate::open_bytes(&bytes, "uniform")
+            .expect("reopen own CDR");
+        assert_eq!(report.skipped_objects, 0, "{version}: {:?}", report.warnings);
+        let saved = &back.pages[0].layers[0].shapes[0];
+        assert!((saved.opacity - 0.4).abs() < 0.002, "{version}: {}", saved.opacity);
+        assert!(saved.effects.is_empty(), "{version}: converted to native alpha");
+        assert_eq!(saved.fill, shape.fill, "{version}: original CMYK values");
+        let notes = export_fidelity_notes(&doc, version);
+        assert!(notes.iter().any(|s| s.contains("converted to editable object opacity")),
+            "{version}: {notes:?}");
+        assert!(!notes.iter().any(|s| s.contains("cannot be reliably written")),
+            "{version}: {notes:?}");
+    }
+    for version in [13u16, 14, 15] {
+        assert!(native_solid_transparency_alpha(&shape, version).is_none());
+        let notes = export_fidelity_notes(&doc_with(vec![shape.clone()]), version);
+        assert!(notes.iter().any(|s| s.contains("cannot be reliably written")),
+            "{version}: {notes:?}");
+    }
+}
+
+#[test]
+fn native_solid_transparency_refuses_fill_only_and_non_normal_blends() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 30.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.effects.push(Effect::Transparency {
+        mask: Fill::Solid(Color::Gray { v: 0.5 }),
+        merge: MergeMode::Normal,
+        target: 0,
+    });
+    assert!(native_solid_transparency_alpha(&shape, 27).is_none());
+    if let Effect::Transparency { target, merge, .. } = &mut shape.effects[0] {
+        *target = 2;
+        *merge = MergeMode::Multiply;
+    }
+    assert!(native_solid_transparency_alpha(&shape, 27).is_none());
+    assert!(export_fidelity_notes(&doc_with(vec![shape]), 27)
+        .iter().any(|note| note.contains("expanded")));
+}
+
+#[test]
+fn fallback_gradient_opacity_weights_stop_positions() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut fountain = tracedraw_core::Fountain::two(
+        FountainKind::Linear, Color::WHITE, Color::BLACK, 0.0,
+    );
+    fountain.stops = vec![
+        tracedraw_core::style::Stop { pos: 0.0, color: Color::WHITE },
+        tracedraw_core::style::Stop { pos: 0.1, color: Color::WHITE },
+        tracedraw_core::style::Stop { pos: 0.2, color: Color::BLACK },
+        tracedraw_core::style::Stop { pos: 1.0, color: Color::BLACK },
+    ];
+    let effect = Effect::Transparency {
+        mask: Fill::Fountain(fountain),
+        merge: MergeMode::Normal,
+        target: 2,
+    };
+    let weighted = mask_mean_opacity(&effect).expect("finite mask");
+    assert!((weighted - 0.15).abs() < 1e-6, "{weighted}");
+    assert!((weighted - 0.5).abs() > 0.3, "must not average stops equally");
+
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 50.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.effects.push(effect);
+    let doc = doc_with(vec![shape]);
+    let bytes = document_to_cdr_version(&doc, 21);
+    let (back, _) = crate::open_bytes(&bytes, "weighted")
+        .expect("reopen approximate mask");
+    assert!((back.pages[0].layers[0].shapes[0].opacity - weighted).abs() < 0.002);
+    let notes = export_fidelity_notes(&doc, 21);
+    assert!(notes.iter().any(|n| n.contains("complex transparency")), "{notes:?}");
+}
+
+#[test]
 fn simple_gradient_mask_is_native_only_when_entire_style_is_representable() {
     use tracedraw_core::live::{Effect, MergeMode};
     let mut ids = tracedraw_core::id::IdSource::default();
