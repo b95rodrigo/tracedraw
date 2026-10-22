@@ -75,11 +75,16 @@ in other versions is experimental and emits a compatibility notice.
 Other lenses, stacked effects and advanced text features can still
 differ after reopening. For transparent gradients, only a single
 normal-blend, two-stop mask with supported options is written as a
-native editable transparency in version 16+. More complicated masks
-are approximated by uniform opacity and emit an explicit fidelity
-notice, rather than losing intermediate stops silently. Prefer
-`.tdraw` to retain a fully editable original while interoperability
-is being improved.
+native editable transparency in version 16+. A normal solid
+transparency applied equally to fill and outline is converted into
+editable object opacity in versions 7-12 and 16+, but its original live
+effect stack is not retained. Uniform opacity in versions 13-15 is
+not reliably writable with the known records, so an explicit warning
+is shown before relying on such files. More complicated gradient masks
+are approximated by opacity weighted by stop spacing, with a fidelity
+warning; this is not equivalent to the original spatial transparency.
+Prefer `.tdraw` to retain the fully editable original while
+interoperability is being improved.
 
 For known lossy constructs, saving a CDR file now appends a "CDR
 warning" to the status line and writes the details to the application
@@ -91,7 +96,10 @@ A source-supported single native invert lens no longer reports static
 expansion, but versions other than 15 show an unverified-layout notice.
 Complex gradient masks (extra stops, special blending, repeats
 or stacked effects) also trigger a separate warning when converted
-to uniform opacity. These source-based warnings are **not exhaustive**;
+to uniform opacity. Solid transparency converted to editable object
+opacity warns that its live effect is not preserved. Version 13-15
+opacity loss carries its own warning. These source-based warnings
+are **not exhaustive**;
 absence of a warning does not mean the file has been independently verified.
 
 Source regression tests for nested metadata, style-string escaping,
