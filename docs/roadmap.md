@@ -14,8 +14,9 @@ for evidence-based acceptance before calling a version reliable.
 3. **P0 vector quality**: simple contours preserve nodes and an
    experimental bounded parametric solver now handles selected crossings
    between two curved boundaries. Regression scenarios are committed but
-   unexecuted. Robust tangencies, overlapping curves, XOR, complex
-   topology and independent output verification remain open.
+   unexecuted. Crossing XOR now uses two validated-in-code Trim paths.
+   Robust tangencies, coincident curved spans, complex topology and
+   independent output verification remain open.
 4. **P0 interaction and performance**: reproduce selection, clip-frame,
    pan and zoom bugs and add regression/benchmark fixtures.
 5. **P0 interchange and production**: test representative recent CDR
