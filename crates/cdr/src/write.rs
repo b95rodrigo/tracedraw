@@ -796,13 +796,18 @@ fn png_to_bmp(png: &[u8]) -> Option<Vec<u8>> {
 /// metadata. A clipping frame contains both a frame shape and normal
 /// document children; neither is a flat top-level layer object.
 fn visit_metadata_shapes(shapes: &[Shape], visit: &mut impl FnMut(&Shape)) {
-    for shape in shapes {
+    // Use an explicit stack because artwork can contain deeply nested
+    // groups. Preserve stable visual order for collected metadata.
+    let mut pending: Vec<&Shape> = shapes.iter().rev().collect();
+    while let Some(shape) = pending.pop() {
         visit(shape);
         match &shape.kind {
-            ShapeKind::Group { children } => visit_metadata_shapes(children, visit),
+            ShapeKind::Group { children } => {
+                pending.extend(children.iter().rev());
+            }
             ShapeKind::ClipFrame { frame, contents } => {
-                visit_metadata_shapes(std::slice::from_ref(frame.as_ref()), visit);
-                visit_metadata_shapes(contents, visit);
+                pending.extend(contents.iter().rev());
+                pending.push(frame);
             }
             _ => {}
         }
