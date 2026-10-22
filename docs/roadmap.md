@@ -24,9 +24,11 @@ for evidence-based acceptance before calling a version reliable.
 5. **P0 interchange and production**: keep compound SVG/PDF clipping,
    ensure ZIP CDR metadata indexes nested frame objects and font names
    safely, and add editable compound-curve round-trip scenarios. These
-   regression checks are committed but unexecuted. CDR saves now
-   display known loss notices. Independently inspect recent CDR files,
-   complex text, ICC profiles, separations and PDF/X.
+   regression checks are committed but unexecuted. Eligible vector
+   clipping frames now use native version-12 `clpt` records in source;
+   newer formats are experimental and trigger compatibility warnings.
+   Independently inspect recent CDR files, complex text, ICC profiles,
+   separations and PDF/X.
 
 A milestone's implementation being marked done is not a substitute for
 this quality sequence. Current priorities are in the compatibility matrix.
