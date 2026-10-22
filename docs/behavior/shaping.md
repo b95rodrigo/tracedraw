@@ -38,9 +38,11 @@ contours, reversing the inner one if needed for non-zero fill.
 
 When both selected inputs have identical simple closed paths, Weld and
 Intersect keep the exact original contour, while Trim and Exclude produce
-the empty result. Simplify also preserves any single simple closed contour
-without changing its node types or control points. This avoids destructive
-flattening where there is no overlap to resolve.
+the empty result. Equivalence also recognises cyclic shifts of the start
+node and reversed traversal, as long as every original path segment
+matches exactly. This does not silently treat similar-looking but
+different curves as identical. Simplify preserves any single simple
+closed contour without changing its node types or control points.
 
 The experimental parametric crossing solver handles Weld, Intersect, Trim
 and Exclude for two simple closed contours made from straight, quadratic
@@ -74,8 +76,9 @@ fallback on touching/crossing paths. Additional unexecuted tests cover
 straight/curved crossing contours in both operand orders, two crossing
 cubic circles, four intersections between perpendicular ellipses,
 parametric derivative/control bounds, tangent fallback, two curved
-XOR crescents, curve/straight XOR and shared-edge/vertex fallback.
-These tests have been added but have not been executed.
+XOR crescents, curve/straight XOR, shared-edge/vertex fallback,
+reversed curves and shifted-start-node equivalence. These tests have
+been added but have not been executed.
 
 ## Panel
 
