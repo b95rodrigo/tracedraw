@@ -32,7 +32,7 @@ features.md says `works`. Do not infer percentages from the inventory totals.
 | CDR-02 | P0 | Save, reopen and resave CDR | No silent loss of supported objects, fonts, colour and dimensions | **Partial**: version coverage varies |
 | DOC-01 | P0 | Text layout and conversion to curves | Exact text bounds, line breaks, original font behavior and outlines | **Not verified** on representative production fixtures |
 | CLR-01 | P0 | ICC, RGB/CMYK and spot colours | Profile preservation, conversions, separations and export consistency | **Not verified** on production fixtures |
-| OUT-01 | P0 | Export PDF/X, SVG and EPS | Independent rendering, printable dimensions, paths, ink values, transparency | **Not verified** on production fixtures |
+| OUT-01 | P0 | Export PDF/X, SVG and EPS | Independent rendering, printable dimensions, paths, ink values, transparency | **Source fix, unverified**: compound clips request even-odd clipping in SVG/PDF and vector regression tests cover a nested Bézier hole; production and independent output remain unverified |
 | OUT-02 | P1 | Print actual-size vector output | Print settings, marks, separations and printer driver interaction | **Partial**: system printing currently uses the system PDF viewer |
 | UI-01 | P1 | Keyboard shortcuts and modal commands | Reproducible key sequences, menu availability, no accidental actions | **Inventory only** |
 | UI-02 | P1 | Toolbars, panels and property bars | State persistence, selection-specific controls and window scaling | **Inventory only** |
