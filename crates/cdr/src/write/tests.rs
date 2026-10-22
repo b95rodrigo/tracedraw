@@ -2182,6 +2182,166 @@ fn graded_transparency_is_written_as_a_gradient_from_16() {
 }
 
 #[test]
+fn native_vector_clip_frame_round_trips_as_editable_container() {
+    use tracedraw_core::geometry::Shape as _;
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut frame = Shape::new(
+        ids.shape(),
+        ShapeKind::Path {
+            path: tracedraw_core::geometry::Circle::new((60.0, 45.0), 25.0)
+                .to_path(0.01),
+            closed: true,
+        },
+    );
+    frame.fill = Fill::Solid(Color::cmyk_pct(0.0, 20.0, 40.0, 0.0));
+    frame.stroke = Some(Stroke::new(Color::BLACK, 0.5));
+    let mut artwork = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 120.0, 90.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    artwork.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+    artwork.stroke = None;
+    artwork.name = Some("Clipped print".to_string());
+    let mut clip = Shape::new(
+        ids.shape(),
+        ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents: vec![artwork],
+        },
+    );
+    clip.name = Some("Editable container".to_string());
+    doc.pages[0].layers[0].shapes = vec![clip];
+    doc.set_ids(ids);
+
+    for v in [12u16, 14, 16, 21, 27] {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, rep) = crate::open_bytes(&bytes, "native")
+            .expect("writer output must reopen");
+        assert_eq!(rep.skipped_objects, 0, "{v}: {:?}", rep.warnings);
+        assert_eq!(back.pages[0].layers[0].shapes.len(), 1, "{v}");
+        let restored = &back.pages[0].layers[0].shapes[0];
+        let ShapeKind::ClipFrame { frame, contents } = &restored.kind else {
+            panic!("{v}: clipping was lost: {:?}", restored.kind);
+        };
+        assert_eq!(restored.name.as_deref(), Some("Editable container"), "{v}");
+        assert_eq!(contents.len(), 1, "{v}");
+        assert_eq!(contents[0].name.as_deref(), Some("Clipped print"), "{v}");
+        assert_eq!(contents[0].fill, Fill::Solid(Color::rgb8(255, 0, 0)), "{v}");
+        assert!(matches!(&frame.kind, ShapeKind::Path { .. }), "{v}");
+        let curves = frame.page_path().elements().iter()
+            .filter(|el| matches!(el, PathEl::CurveTo(_, _, _))).count();
+        assert!(curves >= 4, "{v}: native frame must keep cubic curves");
+        let notes = export_fidelity_notes(&doc, v);
+        if v == 12 {
+            assert!(!notes.iter().any(|n| n.contains("clipping")), "{v}: {notes:?}");
+        } else {
+            assert!(notes.iter().any(|n| n.contains("unverified")), "{v}: {notes:?}");
+        }
+    }
+}
+
+#[test]
+fn native_clip_links_reference_separately_numbered_clpt_groups() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    for shift in [0.0, 70.0] {
+        let frame = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(shift + 10.0, 10.0, shift + 50.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let inside = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(shift, 0.0, shift + 65.0, 70.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let clip = Shape::new(
+            ids.shape(),
+            ShapeKind::ClipFrame {
+                frame: Box::new(frame),
+                contents: vec![inside],
+            },
+        );
+        doc.pages[0].layers[0].shapes.push(clip);
+    }
+    doc.set_ids(ids);
+    let bytes = document_to_cdr_version(&doc, 12);
+    let (_, tree, riff) = chunk_ids(&bytes);
+    let mut group_ids = Vec::new();
+    let mut frame_refs = Vec::new();
+    tree.root.walk(&mut |node, _| {
+        if node.is(b"clpt") {
+            for group in node.children.iter().filter(|c| c.is(b"grp ")) {
+                for numbered in &group.children {
+                    if numbered.is(b"spnd") {
+                        let data = tree.data(&riff, numbered);
+                        group_ids.push(u32::from_le_bytes(
+                            data.get(..4).and_then(|x| x.try_into().ok())
+                                .expect("group spnd"),
+                        ));
+                    }
+                }
+            }
+        }
+        if node.is(b"obj ") {
+            node.walk(&mut |part, _| {
+                if part.is(b"loda") {
+                    for (ty, bytes) in loda_args(tree.data(&riff, part)) {
+                        if ty == 8_005 {
+                            frame_refs.push(u32::from_le_bytes(
+                                bytes.get(..4).and_then(|x| x.try_into().ok())
+                                    .expect("clip reference"),
+                            ));
+                        }
+                    }
+                }
+            });
+        }
+    });
+    group_ids.sort_unstable();
+    frame_refs.sort_unstable();
+    assert_eq!(group_ids.len(), 2);
+    assert_ne!(group_ids[0], group_ids[1]);
+    assert_eq!(group_ids, frame_refs);
+}
+
+#[test]
+fn unsupported_native_clipping_frame_remains_warned() {
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let frame = Shape::new(
+        ids.shape(),
+        ShapeKind::Group { children: Vec::new() },
+    );
+    let inner = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    doc.pages[0].layers[0].shapes.push(Shape::new(
+        ids.shape(),
+        ShapeKind::ClipFrame { frame: Box::new(frame), contents: vec![inner] },
+    ));
+    doc.set_ids(ids);
+    let notes = export_fidelity_notes(&doc, 27);
+    assert!(notes.iter().any(|n| n.contains("lose their clipping")), "{notes:?}");
+}
+
+#[test]
 fn a_clip_frame_keeps_its_fill_under_and_outline_over_the_contents() {
     let mut doc = doc_with(Vec::new());
     let mut ids = doc.ids().clone();
