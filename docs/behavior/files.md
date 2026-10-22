@@ -60,11 +60,18 @@ index the font families used by nested text. This metadata is an index,
 not a guarantee that every live object is faithfully encoded in the
 native document stream.
 
-The current writer preserves many ordinary vector paths, but a clipping
-frame containing non-bitmap artwork is still approximated as a group
-without its hard clipping semantics. Certain live effects and advanced
-text features can also differ after reopening. Prefer `.tdraw` to retain
-a fully editable original while interoperability is being improved.
+The writer now emits native `clpt` references for eligible closed
+vector clipping frames in version 12 and later, retaining frame and
+contents as editable objects. The record layout is supported by public
+documentation and one version 12 fixture only. Its use in versions
+13 to 27 is **experimental** and prompts a fidelity notice, even though
+the project's own reader can reconstruct this arrangement.
+
+Unsupported frames, open contours and versions before 12 continue
+to use an unclipped group approximation. Certain live effects and
+advanced text features can also differ after reopening. Prefer
+`.tdraw` to retain a fully editable original while interoperability
+is being improved.
 
 For known lossy constructs, saving a CDR file now appends a "CDR
 warning" to the status line and writes the details to the application
