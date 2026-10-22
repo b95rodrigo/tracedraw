@@ -16,8 +16,10 @@
 //! per run, bitmaps (24-bit), solid and fountain fills, outlines (width,
 //! caps, joins, dashes, nib, "scale with object", "behind fill") and
 //! uniform transparency. A clip frame holding one bitmap becomes that
-//! bitmap with the frame as its crop path; other clip frames a group of
-//! the frame outline and the contents. Rectangles of versions 15 and later
+//! bitmap with the frame as its crop path; eligible vector clip frames
+//! use the native clpt group format (confirmed for version 12; other
+//! versions experimental). Unsupported frames become an unclipped group.
+//! Rectangles of versions 15 and later
 //! are written as the curve they draw (their corner records are not
 //! understood well enough to write).
 
@@ -2725,8 +2727,13 @@ struct Writer<'a> {
     next_fill: u32,
     next_outline: u32,
     next_bitmap: u32,
-    /// The next text object's `spnd` number.
+    /// Text objects and native clipping groups share the `spnd` namespace.
     next_spnd: u32,
+    /// Indexed native clipping groups in the document's LIST clpt.
+    clip_groups: Vec<Node>,
+    /// Link the actual frame object to the clipping group when writing
+    /// its loda. Consumed by place() so it cannot leak to another object.
+    clip_links: HashMap<tracedraw_core::ShapeId, u32>,
     /// Text formats met so far (versions 7 to 15), see [`TextFormat`].
     text_formats: Vec<TextFormat>,
     guid_seed: u64,
@@ -2799,6 +2806,8 @@ impl<'a> Writer<'a> {
             next_outline: 1,
             next_bitmap: 1,
             next_spnd: 1,
+            clip_groups: Vec::new(),
+            clip_links: HashMap::new(),
             text_formats: Vec::new(),
             guid_seed: seed,
             guids: master_guids.len() as u64,
@@ -2951,6 +2960,11 @@ impl<'a> Writer<'a> {
         } else {
             // Before version 16 the style table is the body of a list.
             docl.push(Node::RawList(*b"stlt", styles));
+        }
+        if !self.clip_groups.is_empty() {
+            // Referenced by the frame object's argument 8005. The reader
+            // indexes the groups by their own spnd before visiting pages.
+            docl.push(list(b"clpt", std::mem::take(&mut self.clip_groups)));
         }
         if !v.zip() {
             // RIFF files (before version 14) end the document tables
@@ -3279,6 +3293,13 @@ impl<'a> Writer<'a> {
             (ARG_OUTLINE, outline_id.to_le_bytes().to_vec()),
             (ARG_ID, id.to_le_bytes().to_vec()),
         ];
+        if let Some(clip) = self.clip_links.remove(&s.id) {
+            // Layout described for version 12: referenced group number,
+            // followed by the three fixed words 1, 0, 1.
+            let mut payload = Buf::default();
+            payload.u32(clip).u32(1).u32(0).u32(1);
+            args.push((8_005, payload.done()));
+        }
         if !s.visible && v.0 >= 21 {
             args.push((ARG_HIDDEN, 1u32.to_le_bytes().to_vec()));
         }
@@ -3465,8 +3486,53 @@ impl<'a> Writer<'a> {
                 return self.bitmap_object(&b, centre, Some(&clip));
             }
             ShapeKind::ClipFrame { frame, contents } => {
-                // Not yet written as a clip container: the frame's fill
-                // under the contents and its outline over them, unclipped.
+                // The native clip container layout is confirmed for version
+                // 12 only. Other generations are an experimental extension
+                // of the same records until independently inspected.
+                // Don't represent unusual/non-vector frames as native clips.
+                let native = v.0 >= 12
+                    && depth < 55
+                    && !contents.is_empty()
+                    && frame.effects.is_empty()
+                    && matches!(
+                        &frame.kind,
+                        ShapeKind::Rect { .. }
+                            | ShapeKind::Ellipse { .. }
+                            | ShapeKind::Path { .. }
+                            | ShapeKind::Polygon { .. }
+                    );
+                if native {
+                    let mut children: Vec<Shape> = contents.to_vec();
+                    for child in &mut children {
+                        child.absorb(s.transform);
+                    }
+                    let mut nested = self.group(&children, centre, depth + 1);
+                    if let Some(Node::List(_, group_body)) = nested.nodes.first_mut() {
+                        // The group id comes from the same namespace used
+                        // by text object spnd records.
+                        let clip_id = self.next_spnd;
+                        self.next_spnd += 1;
+                        group_body.insert(0, chunk(b"spnd", clip_id.to_le_bytes().to_vec()));
+                        let mut frame_object = (**frame).clone();
+                        frame_object.absorb(s.transform);
+                        // The reader copies the frame object's name onto
+                        // the clip container, so prefer the outer name.
+                        if s.name.is_some() {
+                            frame_object.name = s.name.clone();
+                        }
+                        self.clip_links.insert(frame_object.id, clip_id);
+                        let placed = self.object(&frame_object, centre, depth + 1);
+                        let attached = !self.clip_links.contains_key(&frame_object.id);
+                        self.clip_links.remove(&frame_object.id);
+                        if attached && !placed.nodes.is_empty() {
+                            self.clip_groups.extend(nested.nodes);
+                            return placed;
+                        }
+                    }
+                }
+                // Unsupported frames still use the established visual
+                // approximation: content is no longer clipped.
+                // Report this limitation in export_fidelity_notes().
                 let mut f = (**frame).clone();
                 f.absorb(s.transform);
                 let mut kids = Vec::new();
