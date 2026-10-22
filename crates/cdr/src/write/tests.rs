@@ -2374,16 +2374,30 @@ fn a_clip_frame_keeps_its_fill_under_and_outline_over_the_contents() {
         let bytes = document_to_cdr_version(&doc, v);
         let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
         let l = &back.pages[0].layers[0];
-        let ShapeKind::Group { children } = &l.shapes[0].kind else {
-            panic!("{v}: {:?} {:?}", l.shapes[0].kind, rep.warnings);
-        };
-        let looks: Vec<(bool, bool)> = children
-            .iter()
-            .map(|c| (!matches!(c.fill, Fill::None), c.stroke.is_some()))
-            .collect();
-        // Bottom to top: the frame's fill, the contents, its outline.
-        assert_eq!(looks, [(true, false), (true, false), (false, true)], "{v}");
-        assert_eq!(children[0].fill, Fill::Solid(Color::rgb8(0, 120, 0)), "{v}");
+        if v < 12 {
+            // Old versions retain the compatibility approximation.
+            let ShapeKind::Group { children } = &l.shapes[0].kind else {
+                panic!("{v}: {:?} {:?}", l.shapes[0].kind, rep.warnings);
+            };
+            let looks: Vec<(bool, bool)> = children
+                .iter()
+                .map(|c| (!matches!(c.fill, Fill::None), c.stroke.is_some()))
+                .collect();
+            assert_eq!(looks, [(true, false), (true, false), (false, true)], "{v}");
+            assert_eq!(children[0].fill, Fill::Solid(Color::rgb8(0, 120, 0)), "{v}");
+        } else {
+            let ShapeKind::ClipFrame { frame, contents } = &l.shapes[0].kind else {
+                panic!("{v}: expected native clipping, got {:?}", l.shapes[0].kind);
+            };
+            assert_eq!(frame.fill, Fill::Solid(Color::rgb8(0, 120, 0)), "{v}");
+            assert!(frame.stroke.is_some(), "{v}");
+            assert_eq!(contents.len(), 1, "{v}");
+            assert_eq!(
+                contents[0].fill,
+                Fill::Solid(Color::rgb8(200, 230, 150)),
+                "{v}"
+            );
+        }
     }
 }
 
