@@ -702,10 +702,105 @@ fn curved_pair_roots(
     Some(roots)
 }
 
+/// Refuse to infer crossing topology when input segments share an edge,
+/// a vertex or an entire parametric span. Partial collinear line overlaps
+/// also need the general polygon solver, since they are not crossings.
+fn ambiguous_shared_boundary(a: &kurbo::PathSeg, b: &kurbo::PathSeg) -> bool {
+    const EPS: f64 = 1e-7;
+    let a_start = a.start();
+    let a_end = a.end();
+    let b_start = b.start();
+    let b_end = b.end();
+    for x in [a_start, a_end] {
+        for y in [b_start, b_end] {
+            if (x - y).hypot() <= EPS {
+                return true;
+            }
+        }
+    }
+
+    // Identical or reversed curves may have no isolated crossings.
+    // Sampling only rejects suspicious pairs; it never proves disjointness.
+    let same = [0.0, 0.25, 0.5, 0.75, 1.0]
+        .iter()
+        .all(|t| (a.eval(*t) - b.eval(*t)).hypot() <= EPS);
+    let reversed = [0.0, 0.25, 0.5, 0.75, 1.0]
+        .iter()
+        .all(|t| (a.eval(*t) - b.eval(1.0 - *t)).hypot() <= EPS);
+    if same || reversed {
+        return true;
+    }
+
+    if let (kurbo::PathSeg::Line(first), kurbo::PathSeg::Line(second)) = (a, b) {
+        let d = first.p1 - first.p0;
+        let e = second.p1 - second.p0;
+        let len = d.hypot();
+        let other_len = e.hypot();
+        if len <= EPS || other_len <= EPS {
+            return true;
+        }
+        let relative = second.p0 - first.p0;
+        let parallel = cross_vectors(d, e).abs() <= EPS * len * other_len;
+        let collinear = cross_vectors(d, relative).abs() <= EPS * len;
+        if parallel && collinear {
+            let len_sq = d.x * d.x + d.y * d.y;
+            let project = |p: Point| {
+                let v = p - first.p0;
+                (v.x * d.x + v.y * d.y) / len_sq
+            };
+            let low = project(second.p0).min(project(second.p1));
+            let high = project(second.p0).max(project(second.p1));
+            return low.max(0.0) + EPS / len < high.min(1.0);
+        }
+    }
+    false
+}
+
+/// Compare the candidate fill with the expected boolean result at a
+/// bounded sample grid. This is a sanity check, not a proof of topology.
+fn matches_boolean_fill(
+    subject: &BezPath,
+    clip: &BezPath,
+    result: &BezPath,
+    op: Op,
+) -> bool {
+    use crate::geometry::Shape as _;
+    let sa = subject.bounding_box();
+    let sb = clip.bounding_box();
+    let x0 = sa.x0.min(sb.x0);
+    let y0 = sa.y0.min(sb.y0);
+    let width = sa.x1.max(sb.x1) - x0;
+    let height = sa.y1.max(sb.y1) - y0;
+    if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
+        return false;
+    }
+    for ix in 1..=7 {
+        for iy in 1..=7 {
+            let point = Point::new(
+                x0 + width * (ix as f64 / 8.0),
+                y0 + height * (iy as f64 / 8.0),
+            );
+            let in_a = subject.contains(point);
+            let in_b = clip.contains(point);
+            let expected = match op {
+                Op::Weld => in_a || in_b,
+                Op::Intersect => in_a && in_b,
+                Op::Trim => in_a && !in_b,
+                Op::Exclude => in_a != in_b,
+            };
+            if result.contains(point) != expected {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Parametric solver for simple closed curve crossings. Both sides may
 /// contain cubic or quadratic segments. A bounded curve/curve root solver
-/// is used if neither segment is a line. Ambiguous topology, tangencies,
-/// coincident spans and crossing XOR use the polygon fallback.
+/// is used if neither segment is a line. Ambiguous topology, tangencies
+/// and coincident spans use the polygon fallback. Crossing Exclude is
+/// the union of two independently checked directed differences.
 fn exact_curve_crossing(
     subject: &BezPath,
     clip: &BezPath,
@@ -713,7 +808,18 @@ fn exact_curve_crossing(
 ) -> Option<Vec<BezPath>> {
     use crate::geometry::{PathSeg, Shape as _};
     if op == Op::Exclude {
-        return None;
+        // Symmetric difference consists of two disjoint differences.
+        // Both must be accepted by the exact-path solver. If one side
+        // is ambiguous, keep the established polygon fallback for all.
+        let mut subject_only = exact_curve_crossing(subject, clip, Op::Trim)?;
+        let clip_only = exact_curve_crossing(clip, subject, Op::Trim)?;
+        if subject_only.is_empty() || clip_only.is_empty() {
+            return None;
+        }
+        subject_only.extend(clip_only);
+        let combined = join_exact_paths(&subject_only);
+        return matches_boolean_fill(subject, clip, &combined, op)
+            .then_some(subject_only);
     }
     let a_poly = simple_closed_contour(subject)?;
     let b_poly = simple_closed_contour(clip)?;
@@ -729,6 +835,15 @@ fn exact_curve_crossing(
     // budget into thousands of expensive curve-pair searches.
     if a.len().saturating_mul(b.len()) > 512 {
         return None;
+    }
+    // Shared edges and touching existing nodes are not isolated,
+    // transversal intersections. They require different topology rules.
+    for sa in &a {
+        for sb in &b {
+            if ambiguous_shared_boundary(sa, sb) {
+                return None;
+            }
+        }
     }
     let mut remaining_subdivisions = 80_000usize;
     let mut a_cuts = Vec::new();
@@ -817,39 +932,10 @@ fn exact_curve_crossing(
     }
     let paths = crossing_cycles(&kept, vertices.len())?;
 
-    // Last conservative guard: the stitched paths must agree with the
-    // expected boolean membership at representative interior samples.
-    // Ambiguous or incorrectly oriented output falls back to polygons.
+    // The sampled membership guard detects a subset of incorrectly
+    // stitched loops. More comprehensive topology checks remain needed.
     let result = join_exact_paths(&paths);
-    let sa = subject.bounding_box();
-    let sb = clip.bounding_box();
-    let x0 = sa.x0.min(sb.x0);
-    let y0 = sa.y0.min(sb.y0);
-    let width = sa.x1.max(sb.x1) - x0;
-    let height = sa.y1.max(sb.y1) - y0;
-    if width <= 0.0 || height <= 0.0 || !width.is_finite() || !height.is_finite() {
-        return None;
-    }
-    for ix in 1..=7 {
-        for iy in 1..=7 {
-            let point = Point::new(
-                x0 + width * (ix as f64 / 8.0),
-                y0 + height * (iy as f64 / 8.0),
-            );
-            let in_a = subject.contains(point);
-            let in_b = clip.contains(point);
-            let expected = match op {
-                Op::Weld => in_a || in_b,
-                Op::Intersect => in_a && in_b,
-                Op::Trim => in_a && !in_b,
-                Op::Exclude => return None,
-            };
-            if result.contains(point) != expected {
-                return None;
-            }
-        }
-    }
-    Some(paths)
+    matches_boolean_fill(subject, clip, &result, op).then_some(paths)
 }
 
 /// Combine `subject` and `clip` (both in the same coordinate space).
@@ -2089,6 +2175,68 @@ mod tests {
         assert!(simple_closed_contour(&self_crossing).is_none());
         // The polygon solver, not the exact-path early return, receives it.
         assert!(!simplify(&self_crossing).elements().is_empty());
+    }
+
+    #[test]
+    fn crossing_circles_exclude_preserves_two_editable_crescents() {
+        use crate::geometry::Shape as _;
+        let a = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let b = crate::geometry::Circle::new((8.0, 0.0), 10.0).to_path(0.01);
+        let parts = exact_curve_crossing(&a, &b, Op::Exclude)
+            .expect("two transverse circle crossings should produce two crescents");
+        assert_eq!(parts.len(), 2);
+        let combined = join_exact_paths(&parts);
+        assert!(combined.contains(Point::new(-8.0, 0.0)));
+        assert!(combined.contains(Point::new(16.0, 0.0)));
+        assert!(!combined.contains(Point::new(4.0, 0.0)));
+        assert!(parts.iter().all(|part| part.elements().iter()
+            .any(|el| matches!(el, PathEl::CurveTo(_, _, _)))));
+        assert_eq!(overlay(&a, &b, Op::Exclude).elements(), combined.elements());
+        assert_eq!(overlay_parts(&a, &b, Op::Exclude).len(), 2);
+    }
+
+    #[test]
+    fn crossing_circle_and_rectangle_exclude_retains_curve_segments() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let rect = Rect::new(-5.0, -15.0, 3.0, 15.0).to_path(0.01);
+        let parts = exact_curve_crossing(&circle, &rect, Op::Exclude)
+            .expect("transverse curve-line crossings should yield XOR");
+        let result = join_exact_paths(&parts);
+        assert!(result.contains(Point::new(9.0, 0.0)));
+        assert!(result.contains(Point::new(0.0, 12.0)));
+        assert!(!result.contains(Point::new(0.0, 0.0)));
+        assert!(result.elements().iter()
+            .any(|el| matches!(el, PathEl::CurveTo(_, _, _))));
+        assert!(matches_boolean_fill(&circle, &rect, &result, Op::Exclude));
+        assert_eq!(
+            overlay(&circle, &rect, Op::Exclude).elements(),
+            result.elements()
+        );
+    }
+
+    #[test]
+    fn shared_straight_edge_falls_back_without_guessing_xor_topology() {
+        let a = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01);
+        let b = Rect::new(5.0, 0.0, 15.0, 10.0).to_path(0.01);
+        assert!(exact_curve_crossing(&a, &b, Op::Exclude).is_none());
+        assert!(exact_curve_crossing(&a, &b, Op::Trim).is_none());
+        let result = overlay(&a, &b, Op::Exclude);
+        assert!(result.contains(Point::new(2.0, 5.0)));
+        assert!(result.contains(Point::new(12.0, 5.0)));
+        assert!(!result.contains(Point::new(7.0, 5.0)));
+    }
+
+    #[test]
+    fn shared_vertices_and_reversed_curves_are_ambiguous_crossings() {
+        use crate::geometry::Shape as _;
+        let one = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01);
+        let two = Rect::new(10.0, 10.0, 20.0, 20.0).to_path(0.01);
+        assert!(exact_curve_crossing(&one, &two, Op::Weld).is_none());
+        let c = crate::geometry::Circle::new((0.0, 0.0), 12.0).to_path(0.01);
+        let reversed = reverse_closed_contour(&c).expect("simple curve");
+        assert!(exact_curve_crossing(&c, &reversed, Op::Exclude).is_none());
+        assert!(exact_curve_crossing(&c, &reversed, Op::Weld).is_none());
     }
 
     #[test]
