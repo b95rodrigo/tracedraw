@@ -792,31 +792,41 @@ fn png_to_bmp(png: &[u8]) -> Option<Vec<u8>> {
     Some(b)
 }
 
+/// Visit document objects that contribute names or fonts to package
+/// metadata. A clipping frame contains both a frame shape and normal
+/// document children; neither is a flat top-level layer object.
+fn visit_metadata_shapes(shapes: &[Shape], visit: &mut impl FnMut(&Shape)) {
+    for shape in shapes {
+        visit(shape);
+        match &shape.kind {
+            ShapeKind::Group { children } => visit_metadata_shapes(children, visit),
+            ShapeKind::ClipFrame { frame, contents } => {
+                visit_metadata_shapes(std::slice::from_ref(frame.as_ref()), visit);
+                visit_metadata_shapes(contents, visit);
+            }
+            _ => {}
+        }
+    }
+}
+
 /// `metadata/metadata.xml` of version 14 and 15 packages: a summary of
 /// the drawing (fonts used, title, the version that wrote it, pages,
 /// layers and the first page's size in coordinate units).
 fn summary_xml(v: Ver, doc: &Document) -> String {
     let mut fonts: Vec<String> = Vec::new();
-    fn walk(shapes: &[tracedraw_core::Shape], fonts: &mut Vec<String>) {
-        for s in shapes {
-            match &s.kind {
-                tracedraw_core::ShapeKind::Text { spans, .. } => {
-                    for sp in spans {
-                        if !fonts.contains(&sp.font_family) {
-                            fonts.push(sp.font_family.clone());
-                        }
-                    }
-                }
-                tracedraw_core::ShapeKind::Group { children } => walk(children, fonts),
-                _ => {}
-            }
-        }
-    }
     let mut layers = 0;
     for p in &doc.pages {
         for l in &p.layers {
             layers += 1;
-            walk(&l.shapes, &mut fonts);
+            visit_metadata_shapes(&l.shapes, &mut |shape| {
+                if let ShapeKind::Text { spans, .. } = &shape.kind {
+                    for span in spans {
+                        if !fonts.contains(&span.font_family) {
+                            fonts.push(span.font_family.clone());
+                        }
+                    }
+                }
+            });
         }
     }
     fonts.sort();
@@ -980,22 +990,16 @@ fn metadata_xml(v: Ver, doc: &Document) -> String {
 fn textinfo_xml(doc: &Document) -> String {
     let mut objects: Vec<String> = Vec::new();
     let mut layers: Vec<String> = Vec::new();
-    fn names(shapes: &[tracedraw_core::Shape], out: &mut Vec<String>) {
-        for s in shapes {
-            if let Some(n) = s.name.as_deref().filter(|n| !n.is_empty()) {
-                out.push(n.to_string());
-            }
-            if let tracedraw_core::ShapeKind::Group { children } = &s.kind {
-                names(children, out);
-            }
-        }
-    }
     for p in &doc.pages {
         for l in &p.layers {
             if !layers.contains(&l.name) {
                 layers.push(l.name.clone());
             }
-            names(&l.shapes, &mut objects);
+            visit_metadata_shapes(&l.shapes, &mut |shape| {
+                if let Some(name) = shape.name.as_deref().filter(|name| !name.is_empty()) {
+                    objects.push(name.to_string());
+                }
+            });
         }
     }
     objects.sort();
