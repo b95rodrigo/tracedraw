@@ -2514,11 +2514,33 @@ fn run_style_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
     format!("{{{}}}", character_json(sp, fill))
 }
 
+/// Encode user-supplied font family names as JSON string contents.
+/// Quoting backslashes alone is not sufficient: tabs, line breaks and
+/// other control code points would corrupt style records.
+fn json_string_contents(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c < '\u{20}' => {
+                use std::fmt::Write as _;
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// The `character` member of a style string.
 fn character_json(sp: &TextSpan, fill: Option<&Fill>) -> String {
     let weight = if sp.bold { 4096 } else { 64 };
     let size = (sp.size_pt * 254000.0 / 72.0).round() as i64;
-    let family = sp.font_family.replace('\\', "\\\\").replace('"', "\\\"");
+    let family = json_string_contents(&sp.font_family);
     let font = format!(
         r#"{{"font":"{family}","size":"{size}","weight":"{weight}","italic":"{}","underline":"{}","strikeout":"{}"}}"#,
         u8::from(sp.italic),
