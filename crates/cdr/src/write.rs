@@ -62,6 +62,61 @@ pub fn versions() -> std::ops::RangeInclusive<u16> {
     OLDEST_VERSION..=NEWEST_VERSION
 }
 
+/// Known fidelity limitations of CDR writing, based on the actual
+/// conversion branches in Writer::object. This is not a full format
+/// compatibility assessment, and the list may be incomplete.
+pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> {
+    const FRAME: &str = "non-bitmap clipping frames lose their clipping";
+    const HIDDEN: &str = "some hidden objects are omitted";
+    const EFFECTS: &str = "live effects are expanded into static artwork";
+    const PARAGRAPH: &str = "paragraph text frames lose their editable framing";
+    const MASK: &str = "opacity masks may lose their editable structure";
+
+    let mut found = [false; 5];
+    let mut pending: Vec<&Shape> = doc.pages.iter()
+        .flat_map(|page| page.layers.iter())
+        .flat_map(|layer| layer.shapes.iter())
+        .collect();
+    while let Some(shape) = pending.pop() {
+        let container = matches!(
+            &shape.kind,
+            ShapeKind::Group { .. }
+                | ShapeKind::ClipFrame { .. }
+                | ShapeKind::Table(_)
+                | ShapeKind::SymbolInstance { .. }
+        );
+        if !shape.visible && (version < 21 || container) {
+            found[1] = true;
+        }
+        if !shape.effects.is_empty() {
+            found[2] = true;
+        }
+        if shape.opacity_mask.is_some() {
+            found[4] = true;
+        }
+        match &shape.kind {
+            ShapeKind::Group { children } => pending.extend(children.iter()),
+            ShapeKind::ClipFrame { frame, contents } => {
+                if !(contents.len() == 1
+                    && matches!(&contents[0].kind, ShapeKind::Bitmap { .. })
+                    && contents[0].effects.is_empty())
+                {
+                    found[0] = true;
+                }
+                pending.push(frame);
+                pending.extend(contents.iter());
+            }
+            ShapeKind::Text { frame: Some(_), .. } => found[3] = true,
+            _ => {}
+        }
+    }
+    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK]
+        .into_iter()
+        .zip(found)
+        .filter_map(|(note, present)| present.then_some(note))
+        .collect()
+}
+
 /// Write the whole document as a `.cdr` file of [`DEFAULT_VERSION`].
 pub fn document_to_cdr(doc: &Document) -> Vec<u8> {
     document_to_cdr_version(doc, DEFAULT_VERSION)
