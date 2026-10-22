@@ -2241,6 +2241,132 @@ fn unsupported_or_stacked_lens_effects_remain_flagged_as_lossy() {
 }
 
 #[test]
+fn geometric_deformation_and_solid_alpha_keep_vector_output() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 70.0, 45.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.name = Some("Distorted transparent vector".to_string());
+    shape.fill = Fill::Solid(Color::cmyk_pct(0.0, 90.0, 20.0, 0.0));
+    shape.opacity = 0.8;
+    let geometric = Effect::Perspective {
+        corners: [
+            Point::new(10.0, 8.0), Point::new(72.0, 11.0),
+            Point::new(68.0, 47.0), Point::new(12.0, 45.0),
+        ],
+    };
+    let uniform = Effect::Transparency {
+        mask: Fill::Solid(Color::Gray { v: 0.5 }),
+        merge: MergeMode::Normal,
+        target: 2,
+    };
+    for order in [false, true] {
+        shape.effects = if order {
+            vec![uniform.clone(), geometric.clone()]
+        } else {
+            vec![geometric.clone(), uniform.clone()]
+        };
+        for version in [12u16, 16, 21, 27] {
+            let alpha = native_deformation_with_solid_alpha(&shape, version)
+                .expect("one deformation and uniform transparency");
+            assert!((alpha - 0.4).abs() < 1e-6, "{version}");
+            let doc = doc_with(vec![shape.clone()]);
+            let notes = export_fidelity_notes(&doc, version);
+            assert!(notes.iter().any(|n| n.contains("geometric deformation")),
+                "{version}: {notes:?}");
+            assert!(notes.iter().any(|n| n.contains("object opacity")),
+                "{version}: {notes:?}");
+            let bytes = document_to_cdr_version(&doc, version);
+            let (back, report) = crate::open_bytes(&bytes, "geometry-alpha")
+                .expect("reopen own document");
+            assert_eq!(report.skipped_objects, 0, "{version}: {:?}", report.warnings);
+            let restored = &back.pages[0].layers[0].shapes[0];
+            assert!(matches!(&restored.kind, ShapeKind::Path { .. }),
+                "{version}: expected editable path, got {:?}", restored.kind);
+            assert!(restored.effects.is_empty(), "{version}");
+            assert_eq!(restored.name.as_deref(), Some("Distorted transparent vector"));
+            assert_eq!(restored.fill, shape.fill, "{version}");
+            assert!((restored.opacity - 0.4).abs() < 0.002,
+                "{version}: {}", restored.opacity);
+        }
+    }
+}
+
+#[test]
+fn stacked_transparency_effects_are_not_collapsed_with_deformation() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 40.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.effects = vec![
+        Effect::Perspective {
+            corners: [
+                Point::new(0.0, 0.0), Point::new(40.0, 0.0),
+                Point::new(40.0, 30.0), Point::new(0.0, 30.0),
+            ],
+        },
+        Effect::Transparency {
+            mask: Fill::Solid(Color::Gray { v: 0.5 }),
+            merge: MergeMode::Normal,
+            target: 2,
+        },
+        Effect::Transparency {
+            mask: Fill::Solid(Color::Gray { v: 0.5 }),
+            merge: MergeMode::Normal,
+            target: 2,
+        },
+    ];
+    assert!(native_deformation_with_solid_alpha(&shape, 27).is_none());
+    let notes = export_fidelity_notes(&doc_with(vec![shape]), 27);
+    assert!(notes.iter().any(|n| n.contains("expanded")), "{notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("geometric deformation")),
+        "{notes:?}");
+}
+
+#[test]
+fn shadow_plus_solid_alpha_is_not_falsely_marked_geometry_only() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 45.0, 25.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.effects = vec![
+        Effect::BlockShadow {
+            offset: tracedraw_core::geometry::Vec2::new(5.0, -5.0),
+            color: Color::BLACK,
+            gap: 0.0,
+        },
+        Effect::Transparency {
+            mask: Fill::Solid(Color::Gray { v: 0.5 }),
+            merge: MergeMode::Normal,
+            target: 2,
+        },
+    ];
+    assert!(native_deformation_with_solid_alpha(&shape, 27).is_none());
+    let warnings = export_fidelity_notes(&doc_with(vec![shape]), 27);
+    assert!(warnings.iter().any(|n| n.contains("expanded")), "{warnings:?}");
+    assert!(!warnings.iter().any(|n| n.contains("geometric deformation")),
+        "{warnings:?}");
+}
+
+#[test]
 fn solid_transparency_uses_editable_object_opacity_on_known_versions() {
     use tracedraw_core::live::{Effect, MergeMode};
     let mut ids = tracedraw_core::id::IdSource::default();

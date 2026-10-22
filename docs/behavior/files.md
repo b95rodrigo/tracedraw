@@ -78,9 +78,16 @@ normal-blend, two-stop mask with supported options is written as a
 native editable transparency in version 16+. A normal solid
 transparency applied equally to fill and outline is converted into
 editable object opacity in versions 7-12 and 16+, but its original live
-effect stack is not retained. Uniform opacity in versions 13-15 is
-not reliably writable with the known records, so an explicit warning
-is shown before relying on such files. More complicated gradient masks
+effect stack is not retained. The source writer additionally
+supports one geometry-only deformation (distortion, envelope or
+perspective) combined with one uniform solid transparency. It bakes the
+deformation into editable vector path geometry and retains native object
+opacity. Both live controls are lost, so the save emits separate
+conversion notices. Shadows, extrusions, lenses, extra masks and other
+multi-effect stacks are not considered equivalent to this conversion.
+Uniform opacity in versions 13-15 is not reliably writable with the
+known records, so an explicit warning is shown before relying on such
+files. More complicated gradient masks
 are approximated by opacity weighted by stop spacing, with a fidelity
 warning; this is not equivalent to the original spatial transparency.
 Prefer `.tdraw` to retain the fully editable original while
@@ -97,8 +104,10 @@ expansion, but versions other than 15 show an unverified-layout notice.
 Complex gradient masks (extra stops, special blending, repeats
 or stacked effects) also trigger a separate warning when converted
 to uniform opacity. Solid transparency converted to editable object
-opacity warns that its live effect is not preserved. Version 13-15
-opacity loss carries its own warning. These source-based warnings
+opacity warns that its live effect is not preserved. Combined
+geometry-only deformation and uniform alpha additionally warn that the
+editable distortion controls have been baked into vector curves.
+Version 13-15 opacity loss carries its own warning. These source-based warnings
 are **not exhaustive**;
 absence of a warning does not mean the file has been independently verified.
 
