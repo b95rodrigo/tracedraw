@@ -12,6 +12,146 @@ fn doc_with(shapes: Vec<Shape>) -> Document {
 }
 
 #[test]
+fn nested_clip_frame_metadata_lists_text_fonts_and_object_names() {
+    use std::io::Read;
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut frame = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 100.0, 70.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    frame.name = Some("Frame & cutout".into());
+    let mut caption = Shape::new(
+        ids.shape(),
+        ShapeKind::Text {
+            spans: vec![TextSpan::new("Inside", "Clip Font", 18.0)],
+            origin: Point::new(10.0, 20.0),
+            frame: None,
+            align: TextAlign::Left,
+            para: ParagraphStyle::default(),
+            on_path: None,
+        },
+    );
+    caption.name = Some("Label <inside>".into());
+    let mut grouped = Shape::new(
+        ids.shape(),
+        ShapeKind::Group { children: vec![caption] },
+    );
+    grouped.name = Some("Nested group".into());
+    let mut clipped = Shape::new(
+        ids.shape(),
+        ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents: vec![grouped],
+        },
+    );
+    clipped.name = Some("Outer frame".into());
+    doc.pages[0].layers[0].shapes = vec![clipped];
+    doc.set_ids(ids);
+
+    let text_index = textinfo_xml(&doc);
+    for name in ["Outer frame", "Frame &amp; cutout", "Nested group", "Label &lt;inside&gt;"] {
+        assert!(text_index.contains(name), "{name}: {text_index}");
+    }
+    let summary = summary_xml(Ver(14), &doc);
+    assert!(summary.contains("<rdf:li>Clip Font</rdf:li>"), "{summary}");
+
+    // Validate metadata is present in the actual ZIP package, not just
+    // in helpers whose results might not be written by the exporter.
+    for version in [14, 15, 16, 21, 27] {
+        let bytes = document_to_cdr_version(&doc, version);
+        let mut zip = zip::ZipArchive::new(std::io::Cursor::new(&bytes))
+            .expect("valid ZIP container");
+        let name = if version < 16 {
+            "metadata/textinfo.xml"
+        } else {
+            "META-INF/textinfo.xml"
+        };
+        let mut text = String::new();
+        zip.by_name(name).expect("text metadata")
+            .read_to_string(&mut text).expect("UTF-8 XML");
+        for expected in ["Outer frame", "Frame &amp; cutout", "Label &lt;inside&gt;"] {
+            assert!(text.contains(expected), "{version}: {expected}");
+        }
+        if version < 16 {
+            let mut xml = String::new();
+            zip.by_name("metadata/metadata.xml")
+                .expect("legacy metadata")
+                .read_to_string(&mut xml).expect("UTF-8 XML");
+            assert!(xml.contains("<rdf:li>Clip Font</rdf:li>"), "{version}: {xml}");
+        }
+    }
+}
+
+#[test]
+fn boolean_compound_bezier_holes_keep_editable_cdr_contours() {
+    use tracedraw_core::geometry::Shape as _;
+    let outer = tracedraw_core::geometry::Circle::new((100.0, 50.0), 35.0)
+        .to_path(0.01);
+    let inner = tracedraw_core::geometry::Circle::new((100.0, 50.0), 14.0)
+        .to_path(0.01);
+    let cut = tracedraw_core::shaping::overlay(
+        &outer,
+        &inner,
+        tracedraw_core::shaping::Op::Trim,
+    );
+    let cubics = cut.elements().iter()
+        .filter(|el| matches!(el, PathEl::CurveTo(_, _, _))).count();
+    assert!(cubics >= 8, "both rings should use original cubic curves");
+
+    let mut doc = doc_with(Vec::new());
+    let id = doc.ids_mut().shape();
+    let mut artwork = Shape::new(
+        id,
+        ShapeKind::Path {
+            path: cut,
+            closed: true,
+        },
+    );
+    artwork.name = Some("Compound hole".into());
+    artwork.fill = Fill::Solid(Color::cmyk_pct(0.0, 100.0, 100.0, 0.0));
+    artwork.stroke = None;
+    doc.pages[0].layers[0].shapes.push(artwork);
+
+    for v in [14u16, 16, 21, 27] {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, report) = crate::open_bytes(&bytes, "roundtrip")
+            .expect("read own CDR");
+        assert_eq!(report.skipped_objects, 0, "{v}: {:?}", report.warnings);
+        let restored = &back.pages[0].layers[0].shapes[0];
+        let ShapeKind::Path { path, closed } = &restored.kind else {
+            panic!("{v}: expected an editable path, got {:?}", restored.kind);
+        };
+        assert!(*closed, "{v}: compound contour must be closed");
+        assert_eq!(
+            path.elements().iter().filter(|el| matches!(el, PathEl::MoveTo(_))).count(),
+            2,
+            "{v}: inner and outer boundaries must remain distinct"
+        );
+        assert_eq!(
+            path.elements().iter().filter(|el| matches!(el, PathEl::ClosePath)).count(),
+            2,
+            "{v}: both boundaries must remain closed"
+        );
+        assert_eq!(
+            path.elements().iter().filter(|el| matches!(el, PathEl::CurveTo(_, _, _))).count(),
+            cubics,
+            "{v}: curves must not become line chains"
+        );
+        assert_eq!(restored.name.as_deref(), Some("Compound hole"), "{v}");
+        assert_eq!(
+            restored.fill,
+            Fill::Solid(Color::cmyk_pct(0.0, 100.0, 100.0, 0.0)),
+            "{v}: original ink values"
+        );
+    }
+}
+
+#[test]
 fn rectangle_ellipse_curve_and_text_round_trip() {
     let mut doc = Document::new("w", Size::new(200.0, 100.0));
     let mut ids = doc.ids().clone();
