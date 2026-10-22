@@ -64,6 +64,23 @@ pub fn versions() -> std::ops::RangeInclusive<u16> {
     OLDEST_VERSION..=NEWEST_VERSION
 }
 
+/// A native clipping frame must be a simple exportable, closed vector
+/// object. Reject open paths and effects rather than writing a reference
+/// to a frame that cannot behave as a clipping outline.
+fn native_clip_frame_shape(frame: &Shape) -> bool {
+    if !frame.visible || !frame.effects.is_empty() || frame.opacity_mask.is_some() {
+        return false;
+    }
+    match &frame.kind {
+        ShapeKind::Rect { .. } | ShapeKind::Polygon { .. } => true,
+        ShapeKind::Ellipse { arc, .. } => arc.as_ref().is_none_or(|a| a.pie),
+        ShapeKind::Path { path, closed } => {
+            *closed && path.elements().iter().any(|el| matches!(el, PathEl::ClosePath))
+        }
+        _ => false,
+    }
+}
+
 /// Known fidelity limitations of CDR writing, based on the actual
 /// conversion branches in Writer::object. This is not a full format
 /// compatibility assessment, and the list may be incomplete.
@@ -106,16 +123,7 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
                     && contents[0].effects.is_empty();
                 let native_vector = version >= 12
                     && !contents.is_empty()
-                    && frame.visible
-                    && frame.effects.is_empty()
-                    && frame.opacity_mask.is_none()
-                    && matches!(
-                        &frame.kind,
-                        ShapeKind::Rect { .. }
-                            | ShapeKind::Ellipse { .. }
-                            | ShapeKind::Path { .. }
-                            | ShapeKind::Polygon { .. }
-                    );
+                    && native_clip_frame_shape(frame);
                 if !bitmap_crop && !native_vector {
                     found[0] = true;
                 } else if native_vector && !bitmap_crop && version != 12 {
@@ -3509,16 +3517,7 @@ impl<'a> Writer<'a> {
                 let native = v.0 >= 12
                     && depth < 55
                     && !contents.is_empty()
-                    && frame.visible
-                    && frame.effects.is_empty()
-                    && frame.opacity_mask.is_none()
-                    && matches!(
-                        &frame.kind,
-                        ShapeKind::Rect { .. }
-                            | ShapeKind::Ellipse { .. }
-                            | ShapeKind::Path { .. }
-                            | ShapeKind::Polygon { .. }
-                    );
+                    && native_clip_frame_shape(frame);
                 if native {
                     let mut children: Vec<Shape> = contents.to_vec();
                     for child in &mut children {
