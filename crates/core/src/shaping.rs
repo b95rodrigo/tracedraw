@@ -2084,6 +2084,76 @@ mod tests {
     }
 
     #[test]
+    fn two_crossing_cubic_circles_keep_editable_segments() {
+        use crate::geometry::Shape as _;
+        let a = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let b = crate::geometry::Circle::new((8.0, 0.0), 10.0).to_path(0.01);
+        for op in [Op::Weld, Op::Intersect, Op::Trim] {
+            let pieces = exact_curve_crossing(&a, &b, op)
+                .expect("two transverse cubic intersections");
+            assert!(!pieces.is_empty());
+            let result = join_exact_paths(&pieces);
+            let cubic_count = result.elements().iter()
+                .filter(|el| matches!(el, PathEl::CurveTo(_, _, _))).count();
+            assert!(cubic_count > 0 && cubic_count < 24, "{op:?}: {cubic_count}");
+            assert_eq!(overlay_parts(&a, &b, op).len(), pieces.len());
+            let left_only = result.contains(Point::new(-8.0, 0.0));
+            let overlap = result.contains(Point::new(4.0, 0.0));
+            let right_only = result.contains(Point::new(16.0, 0.0));
+            match op {
+                Op::Weld => assert!(left_only && overlap && right_only),
+                Op::Intersect => assert!(!left_only && overlap && !right_only),
+                Op::Trim => assert!(left_only && !overlap && !right_only),
+                Op::Exclude => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn perpendicular_ellipses_have_four_parametric_crossings() {
+        use crate::geometry::Shape as _;
+        let wide = crate::geometry::Ellipse::new(
+            (0.0, 0.0), (14.0, 6.0), 0.0
+        ).to_path(0.01);
+        let tall = crate::geometry::Ellipse::new(
+            (0.0, 0.0), (6.0, 14.0), 0.0
+        ).to_path(0.01);
+        let pieces = exact_curve_crossing(&wide, &tall, Op::Intersect)
+            .expect("four transverse cubic intersections");
+        let result = join_exact_paths(&pieces);
+        assert!(!result.elements().is_empty());
+        assert!(result.contains(Point::new(0.0, 0.0)));
+        assert!(!result.contains(Point::new(10.0, 0.0)));
+        assert!(result.elements().iter()
+            .any(|el| matches!(el, PathEl::CurveTo(_, _, _))));
+    }
+
+    #[test]
+    fn curve_curve_tangent_remains_on_conservative_fallback() {
+        use crate::geometry::Shape as _;
+        let a = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let b = crate::geometry::Circle::new((20.0, 0.0), 10.0).to_path(0.01);
+        for op in [Op::Weld, Op::Intersect, Op::Trim] {
+            assert!(exact_curve_crossing(&a, &b, op).is_none());
+        }
+        assert!(exact_curve_crossing(&a, &b, Op::Exclude).is_none());
+    }
+
+    #[test]
+    fn derivative_and_bounding_hull_cover_cubic_control_points() {
+        let cubic = kurbo::CubicBez::new(
+            (0.0, 0.0), (2.0, 15.0), (8.0, -5.0), (10.0, 10.0)
+        );
+        let segment = kurbo::PathSeg::Cubic(cubic);
+        let bounds = control_bounds(&segment);
+        assert_eq!(bounds, (0.0, -5.0, 10.0, 15.0));
+        let start = curve_velocity(&segment, 0.0);
+        let end = curve_velocity(&segment, 1.0);
+        assert!((start - (cubic.p1 - cubic.p0) * 3.0).hypot() < 1e-9);
+        assert!((end - (cubic.p3 - cubic.p2) * 3.0).hypot() < 1e-9);
+    }
+
+    #[test]
     fn curve_crossing_straight_clip_keeps_cubics_in_weld_intersect_and_trim() {
         use crate::geometry::Shape as _;
         let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
