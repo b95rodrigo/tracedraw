@@ -610,6 +610,7 @@ impl CurveWindow {
 fn curved_pair_roots(
     a: &kurbo::PathSeg,
     b: &kurbo::PathSeg,
+    remaining: &mut usize,
 ) -> Option<Vec<(f64, f64)>> {
     const FLATNESS: f64 = 1e-7;
     const LIMIT: usize = 40_000;
@@ -624,6 +625,7 @@ fn curved_pair_roots(
         if visited > LIMIT {
             return None;
         }
+        *remaining = remaining.checked_sub(1)?;
         let a_bounds = control_bounds(&left.segment);
         let b_bounds = control_bounds(&right.segment);
         if !bounds_touch(a_bounds, b_bounds, 1e-9) {
@@ -723,6 +725,12 @@ fn exact_curve_crossing(
         return None;
     }
 
+    // A single operation must not multiply the per-pair subdivision
+    // budget into thousands of expensive curve-pair searches.
+    if a.len().saturating_mul(b.len()) > 512 {
+        return None;
+    }
+    let mut remaining_subdivisions = 80_000usize;
     let mut a_cuts = Vec::new();
     let mut b_cuts = Vec::new();
     let mut vertices: Vec<Point> = Vec::new();
@@ -739,7 +747,7 @@ fn exact_curve_crossing(
                     .iter()
                     .map(|h| (h.segment_t, h.line_t))
                     .collect(),
-                _ => curved_pair_roots(sa, sb)?,
+                _ => curved_pair_roots(sa, sb, &mut remaining_subdivisions)?,
             };
             for (ta, tb) in hits {
                 // Do not guess ownership of a vertex shared by segments.
