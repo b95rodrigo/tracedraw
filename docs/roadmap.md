@@ -31,9 +31,11 @@ for evidence-based acceptance before calling a version reliable.
    observed version-15 record; other versions remain unverified.
    Two-stop gradient transparency uses the source-supported native
    style path. Solid masks on fill and outline use native object alpha in
-   v7-12 and v16+, while v13-15 now warn about unreliable opacity.
-   Complex gradient masks fall back to a stop-weighted mean with a
-   visible notice; accurate live mask preservation remains open.
+   v7-12 and v16+; one geometry-only distortion can be baked into
+   editable vector geometry while retaining this native alpha.
+   Combined live-effect controls are not retained. Versions 13-15
+   warn about unreliable opacity. Complex gradients fall back to a
+   stop-weighted mean; accurate live mask stacks remain open.
    Independently inspect recent CDR files, complex text, ICC profiles,
    separations and PDF/X.
 
