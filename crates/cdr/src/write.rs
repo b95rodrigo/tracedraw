@@ -3733,7 +3733,10 @@ impl<'a> Writer<'a> {
             // several independent vector shapes. Preserve their visual
             // stacking and editability inside an ordinary CDR group.
             // No native live-effect handle is claimed or recreated.
-            if groupable_expanded_vector_effect(s, &all) {
+            // Grouping adds one nesting level. Near the writer's
+            // existing 60-level limit, use the previous flat expansion
+            // rather than losing all component objects at depth 61.
+            if depth < 59 && groupable_expanded_vector_effect(s, &all) {
                 return self.group(&all, centre, depth + 1);
             }
             return self.objects(&all, centre, depth + 1);
