@@ -92,6 +92,15 @@ one normal editable group instead of scattering them across the layer.
 The visual stacking of the components is maintained. Their individual
 paths and fills remain editable, but the original live contour, shadow
 or extrusion parameters cannot be reconstructed from the CDR group.
+
+A separate, narrow writer for **sharp, flat drop shadows** can export
+the shadow as a displaced editable vector silhouette behind the original
+object. This requires an ordinary closed vector shape, zero blur,
+normal compositing, no perspective and a target version that supports
+the shadow opacity. The shadow and source are grouped; the original
+editable drop-shadow controls are not retained. **Soft, perspective,
+multiply-blended or otherwise unsupported drop shadows are omitted**
+from CDR and now produce an explicit loss warning.
 Mixed/raster pieces keep the previous fallback. Very deeply nested
 objects also use the flat fallback if adding a group would exceed the
 writer's depth limit, avoiding accidental loss of generated shapes.
@@ -115,8 +124,13 @@ Complex gradient masks (extra stops, special blending, repeats
 or stacked effects) also trigger a separate warning when converted
 to uniform opacity. Contour, block shadow and extrusion groups
 still report that their live controls were expanded to static editable
-artwork. Solid transparency converted to editable object
-opacity warns that its live effect is not preserved. Combined
+artwork. Simple sharp drop shadows report conversion to
+editable geometry; unsupported drop shadows report that the shadow is
+omitted entirely. The export also warns about unpreserved fill/outline
+overprint flags, painterly or variable-width strokes, extra paint layers
+and active bitmap effects on vector objects. Such properties can matter
+for production colour and printing. Solid transparency converted to
+editable object opacity warns that its live effect is not preserved. Combined
 geometry-only deformation and uniform alpha additionally warn that the
 editable distortion controls have been baked into vector curves.
 Version 13-15 opacity loss carries its own warning. These source-based warnings

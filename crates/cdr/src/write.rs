@@ -249,6 +249,51 @@ fn groupable_expanded_vector_effect(
     })
 }
 
+/// A flat, sharp, normally composited drop shadow is an ordinary
+/// silhouette with a translation. Preserve that silhouette as a real
+/// editable vector path instead of silently omitting the shadow.
+/// Feathering, perspective shadows and special compositing require
+/// different records and must not be approximated as an opaque path.
+fn editable_hard_shadow(shape: &Shape, version: u16) -> Option<Shape> {
+    use tracedraw_core::live::MergeMode;
+    let shadow = shape.shadow.as_ref()?;
+    if !native_clip_frame_shape(shape)
+        || shape.opacity < 0.999
+        || !shape.opacity.is_finite()
+        || shape.raster_fx.is_some()
+        || !shape.extra_fills.is_empty()
+        || !shape.extra_strokes.is_empty()
+        || shadow.perspective.is_some()
+        || shadow.merge != MergeMode::Normal
+        || !shadow.blur.is_finite()
+        || shadow.blur.abs() > 1e-9
+        || !shadow.offset.x.is_finite()
+        || !shadow.offset.y.is_finite()
+        || !shadow.opacity.is_finite()
+        || shadow.opacity <= 0.0
+        || shadow.opacity > 1.0
+        || ((13..=15).contains(&version) && shadow.opacity < 0.999)
+    {
+        return None;
+    }
+    let page_path = shape.page_path();
+    if page_path.elements().is_empty() {
+        return None;
+    }
+    let transformed = shadow.silhouette_transform(page_path.bounding_box()) * page_path;
+    let mut piece = Shape::new(
+        shape.id,
+        ShapeKind::Path {
+            path: transformed,
+            closed: true,
+        },
+    );
+    piece.fill = Fill::Solid(shadow.color);
+    piece.stroke = None;
+    piece.opacity = shadow.opacity;
+    Some(piece)
+}
+
 /// Known fidelity limitations of CDR writing, based on the actual
 /// conversion branches in Writer::object. This is not a full format
 /// compatibility assessment, and the list may be incomplete.
@@ -270,8 +315,20 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
         "uniform opacity cannot be reliably written in CDR versions 13-15";
     const DEFORMATION: &str =
         "live geometric deformation is converted into editable curves, not retained as a live effect";
+    const HARD_SHADOW: &str =
+        "hard drop shadow is exported as editable vector artwork, not a live shadow";
+    const SOFT_SHADOW: &str =
+        "soft or unsupported drop shadow is omitted from CDR output";
+    const OVERPRINT: &str =
+        "fill or outline overprint settings are not preserved in CDR output";
+    const OUTLINE: &str =
+        "special variable-width, painterly or painted outlines are not preserved in CDR output";
+    const EXTRA_PAINT: &str =
+        "additional fills and outlines are not preserved in CDR output";
+    const RASTER_EFFECTS: &str =
+        "bitmap effects attached to vector objects are not preserved in CDR output";
 
-    let mut found = [false; 11];
+    let mut found = [false; 17];
     let mut pending: Vec<&Shape> = doc.pages.iter()
         .flat_map(|page| page.layers.iter())
         .flat_map(|layer| layer.shapes.iter())
@@ -320,6 +377,31 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
         if shape.opacity_mask.is_some() {
             found[4] = true;
         }
+        if shape.shadow.is_some() {
+            if editable_hard_shadow(shape, version).is_some() {
+                found[11] = true;
+            } else {
+                found[12] = true;
+            }
+        }
+        if shape.overprint_fill || shape.overprint_outline {
+            found[13] = true;
+        }
+        if shape.stroke.as_ref().is_some_and(|stroke|
+            stroke.painterly.is_some()
+                || !stroke.widths.is_empty()
+                || stroke.fill.is_some()
+        ) {
+            found[14] = true;
+        }
+        if !shape.extra_fills.is_empty() || !shape.extra_strokes.is_empty() {
+            found[15] = true;
+        }
+        if shape.raster_fx.as_ref().is_some_and(|fx|
+            fx.effects.iter().any(|effect| effect.visible)
+        ) {
+            found[16] = true;
+        }
         match &shape.kind {
             ShapeKind::Group { children } => pending.extend(children.iter()),
             ShapeKind::ClipFrame { frame, contents } => {
@@ -346,6 +428,7 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
     [
         FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK,
         EXPERIMENTAL, LENS, GRADIENT, UNIFORM, ALPHA, DEFORMATION,
+        HARD_SHADOW, SOFT_SHADOW, OVERPRINT, OUTLINE, EXTRA_PAINT, RASTER_EFFECTS,
     ]
         .into_iter()
         .zip(found)
@@ -3656,6 +3739,20 @@ impl<'a> Writer<'a> {
             );
         if !s.visible && !keeps_hidden {
             return none();
+        }
+        // A representable hard shadow is a displaced vector silhouette
+        // behind the original object. Keep both pieces editable in one
+        // group without claiming the original live shadow is retained.
+        if let Some(shadow_path) = editable_hard_shadow(s, self.v.0) {
+            let mut original = s.clone();
+            original.shadow = None;
+            let parts = [shadow_path, original];
+            // Adding the group consumes another level; keep the flat
+            // vector path fallback near the writer's depth budget.
+            if depth < 59 {
+                return self.group(&parts, centre, depth + 1);
+            }
+            return self.objects(&parts, centre, depth + 1);
         }
         // Paragraph text goes out as a group of artistic texts, one a line
         // placed where its frame put it (frames are not written yet), so it
