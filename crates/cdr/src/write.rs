@@ -221,6 +221,34 @@ fn native_simple_gradient_mask(shape: &Shape, version: u16)
     Some((f.clone(), *target))
 }
 
+/// Expanded object-generating vector effects are still editable if
+/// their individual pieces remain vector paths. Keep the pieces in a
+/// normal group rather than scattering them across the document layer.
+/// This retains the object order and makes the static result selectable
+/// as one unit, but does not retain the original live effect controls.
+fn groupable_expanded_vector_effect(
+    shape: &Shape,
+    expanded: &[Shape],
+) -> bool {
+    use tracedraw_core::live::Effect;
+    if expanded.len() < 2 || !shape.effects.iter().any(|effect| {
+        matches!(
+            effect,
+            Effect::Contour { .. } | Effect::Extrude { .. }
+                | Effect::BlockShadow { .. }
+        )
+    }) {
+        return false;
+    }
+    expanded.iter().all(|part| {
+        matches!(
+            &part.kind,
+            ShapeKind::Rect { .. } | ShapeKind::Ellipse { .. }
+                | ShapeKind::Path { .. } | ShapeKind::Polygon { .. }
+        )
+    })
+}
+
 /// Known fidelity limitations of CDR writing, based on the actual
 /// conversion branches in Writer::object. This is not a full format
 /// compatibility assessment, and the list may be incomplete.
@@ -3700,6 +3728,13 @@ impl<'a> Writer<'a> {
             all.extend(ev.above.iter().cloned());
             for x in all.iter_mut() {
                 x.effects.clear();
+            }
+            // A contour, block shadow or extrusion can expand into
+            // several independent vector shapes. Preserve their visual
+            // stacking and editability inside an ordinary CDR group.
+            // No native live-effect handle is claimed or recreated.
+            if groupable_expanded_vector_effect(s, &all) {
+                return self.group(&all, centre, depth + 1);
             }
             return self.objects(&all, centre, depth + 1);
         }

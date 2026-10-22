@@ -2241,6 +2241,129 @@ fn unsupported_or_stacked_lens_effects_remain_flagged_as_lossy() {
 }
 
 #[test]
+fn generated_contours_block_shadows_and_extrusions_remain_editable_groups() {
+    use tracedraw_core::live::Effect;
+    let sample = |effect: Effect| {
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let mut shape = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(25.0, 20.0, 65.0, 55.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        shape.name = Some("Original artwork".to_string());
+        shape.fill = Fill::Solid(Color::rgb8(220, 20, 40));
+        shape.stroke = None;
+        shape.effects.push(effect);
+        shape
+    };
+    let effects = [
+        (
+            "contour",
+            Effect::Contour {
+                steps: 3,
+                offset: 2.0,
+                outside: true,
+                to_center: false,
+                fill_to: Color::WHITE,
+                outline_to: None,
+                color_blend: 0,
+                corners: Some(tracedraw_core::shaping::Join::Miter),
+                accel_objects: 0.0,
+                accel_colors: 0.0,
+            },
+        ),
+        (
+            "block-shadow",
+            Effect::BlockShadow {
+                offset: tracedraw_core::geometry::Vec2::new(7.0, -5.0),
+                color: Color::BLACK,
+                gap: 0.0,
+            },
+        ),
+        (
+            "extrusion",
+            Effect::Extrude {
+                depth: tracedraw_core::geometry::Vec2::new(10.0, -9.0),
+                vanishing: None,
+                amount: 0.0,
+                shade_from: None,
+                shade_to: None,
+                light_angle: 135.0,
+                light_intensity: 50.0,
+                bevel: 0.0,
+                kind: None,
+                on_object: false,
+                solid: None,
+                space: Default::default(),
+            },
+        ),
+    ];
+    for (kind, effect) in effects {
+        let source = sample(effect);
+        let expanded = tracedraw_core::live::evaluate(&source);
+        let count = expanded.below.len() + 1 + expanded.above.len();
+        assert!(count >= 2, "{kind}: expected multiple vector pieces");
+        let mut all = expanded.below;
+        all.push(expanded.main);
+        all.extend(expanded.above);
+        assert!(groupable_expanded_vector_effect(&source, &all), "{kind}");
+        let doc = doc_with(vec![source]);
+        for version in [12u16, 16, 21, 27] {
+            let bytes = document_to_cdr_version(&doc, version);
+            let (back, report) = crate::open_bytes(&bytes, "expanded")
+                .expect("reopen generated vector group");
+            assert_eq!(report.skipped_objects, 0, "{kind}/{version}: {:?}", report.warnings);
+            let shapes = &back.pages[0].layers[0].shapes;
+            assert_eq!(shapes.len(), 1, "{kind}/{version}: keep one selectable group");
+            let ShapeKind::Group { children } = &shapes[0].kind else {
+                panic!("{kind}/{version}: expected vector group, got {:?}", shapes[0].kind);
+            };
+            assert_eq!(children.len(), count, "{kind}/{version}: component count");
+            assert!(children.iter().all(|child| {
+                child.effects.is_empty() && matches!(
+                    &child.kind,
+                    ShapeKind::Path { .. } | ShapeKind::Rect { .. }
+                        | ShapeKind::Ellipse { .. } | ShapeKind::Polygon { .. }
+                )
+            }), "{kind}/{version}: all pieces remain editable vectors");
+            assert!(export_fidelity_notes(&doc, version)
+                .iter().any(|note| note.contains("expanded")),
+                "{kind}/{version}: effect controls are no longer editable");
+        }
+    }
+}
+
+#[test]
+fn expanded_vector_grouping_rejects_single_shapes_and_non_vector_children() {
+    use tracedraw_core::live::Effect;
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut source = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 30.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    let other = source.clone();
+    assert!(!groupable_expanded_vector_effect(&source, &[other.clone(), other.clone()]));
+    source.effects.push(Effect::BlockShadow {
+        offset: tracedraw_core::geometry::Vec2::new(5.0, -5.0),
+        color: Color::BLACK,
+        gap: 0.0,
+    });
+    assert!(!groupable_expanded_vector_effect(&source, std::slice::from_ref(&other)));
+    let nested = Shape::new(
+        ids.shape(),
+        ShapeKind::Group { children: vec![other.clone()] },
+    );
+    assert!(!groupable_expanded_vector_effect(&source, &[other, nested]));
+}
+
+#[test]
 fn geometric_deformation_and_solid_alpha_keep_vector_output() {
     use tracedraw_core::live::{Effect, MergeMode};
     let mut ids = tracedraw_core::id::IdSource::default();

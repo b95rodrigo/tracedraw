@@ -85,6 +85,14 @@ deformation into editable vector path geometry and retains native object
 opacity. Both live controls are lost, so the save emits separate
 conversion notices. Shadows, extrusions, lenses, extra masks and other
 multi-effect stacks are not considered equivalent to this conversion.
+
+When contour, block-shadow or extrusion live effects produce multiple
+ordinary vector pieces, the CDR writer now places those pieces into
+one normal editable group instead of scattering them across the layer.
+The visual stacking of the components is maintained. Their individual
+paths and fills remain editable, but the original live contour, shadow
+or extrusion parameters cannot be reconstructed from the CDR group.
+Mixed/raster pieces keep the previous fallback.
 Uniform opacity in versions 13-15 is not reliably writable with the
 known records, so an explicit warning is shown before relying on such
 files. More complicated gradient masks
@@ -103,7 +111,9 @@ A source-supported single native invert lens no longer reports static
 expansion, but versions other than 15 show an unverified-layout notice.
 Complex gradient masks (extra stops, special blending, repeats
 or stacked effects) also trigger a separate warning when converted
-to uniform opacity. Solid transparency converted to editable object
+to uniform opacity. Contour, block shadow and extrusion groups
+still report that their live controls were expanded to static editable
+artwork. Solid transparency converted to editable object
 opacity warns that its live effect is not preserved. Combined
 geometry-only deformation and uniform alpha additionally warn that the
 editable distortion controls have been baked into vector curves.
