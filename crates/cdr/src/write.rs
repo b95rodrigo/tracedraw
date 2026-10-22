@@ -158,6 +158,30 @@ fn native_solid_transparency_alpha(shape: &Shape, version: u16) -> Option<f64> {
     }
 }
 
+/// A single geometric deformation and a solid fill-and-outline
+/// transparency can be combined without approximating the opacity. The
+/// deformation is baked into editable vector geometry; neither live
+/// effect survives as an effect stack. Geometry-only transforms are
+/// order-independent with uniform object alpha, unlike masks and lenses.
+fn native_deformation_with_solid_alpha(shape: &Shape, version: u16) -> Option<f64> {
+    use tracedraw_core::live::Effect;
+    if shape.effects.len() != 2 {
+        return None;
+    }
+    let deformations = shape.effects.iter().filter(|effect| matches!(
+        effect,
+        Effect::Distort(_) | Effect::Envelope { .. } | Effect::Perspective { .. }
+    )).count();
+    if deformations != 1 {
+        return None;
+    }
+    let mut just_transparency = shape.clone();
+    just_transparency.effects.retain(|effect| {
+        matches!(effect, Effect::Transparency { .. })
+    });
+    native_solid_transparency_alpha(&just_transparency, version)
+}
+
 /// Only a single simple two-stop transparency can be represented by
 /// the known version-16+ style-string layout without dropping editable
 /// stops, repeats, stacking or blend semantics.
@@ -216,8 +240,10 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
         "solid transparency effect is converted to editable object opacity, not retained as a live effect";
     const ALPHA: &str =
         "uniform opacity cannot be reliably written in CDR versions 13-15";
+    const DEFORMATION: &str =
+        "live geometric deformation is converted into editable curves, not retained as a live effect";
 
-    let mut found = [false; 10];
+    let mut found = [false; 11];
     let mut pending: Vec<&Shape> = doc.pages.iter()
         .flat_map(|page| page.layers.iter())
         .flat_map(|layer| layer.shapes.iter())
@@ -240,6 +266,9 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
                 }
             } else if native_solid_transparency_alpha(shape, version).is_some() {
                 found[8] = true;
+            } else if native_deformation_with_solid_alpha(shape, version).is_some() {
+                found[8] = true;
+                found[10] = true;
             } else if native_simple_gradient_mask(shape, version).is_none() {
                 found[2] = true;
             }
@@ -288,7 +317,7 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
     }
     [
         FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK,
-        EXPERIMENTAL, LENS, GRADIENT, UNIFORM, ALPHA,
+        EXPERIMENTAL, LENS, GRADIENT, UNIFORM, ALPHA, DEFORMATION,
     ]
         .into_iter()
         .zip(found)
@@ -3644,6 +3673,18 @@ impl<'a> Writer<'a> {
                 base.effects.clear();
                 base.opacity = alpha;
                 return self.object(&base, centre, depth + 1);
+            }
+            if let Some(alpha) = native_deformation_with_solid_alpha(s, self.v.0) {
+                let evaluated = tracedraw_core::live::evaluate(s);
+                // Deformation changes only the main path. The remaining
+                // transparency is uniform, so no generated companion
+                // objects or per-pixel compositing is necessary.
+                if evaluated.below.is_empty() && evaluated.above.is_empty() {
+                    let mut flattened = evaluated.main;
+                    flattened.effects.clear();
+                    flattened.opacity = alpha;
+                    return self.object(&flattened, centre, depth + 1);
+                }
             }
             let ev = tracedraw_core::live::evaluate(s);
             let mut all: Vec<Shape> = ev.below.clone();
