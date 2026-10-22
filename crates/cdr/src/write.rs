@@ -125,6 +125,39 @@ fn native_invert_lens_arg(identifier: u32) -> Vec<u8> {
     record.done()
 }
 
+/// A solid, normal-blend mask applied equally to fill and outline is
+/// visually identical to uniform object opacity. Save it as the object's
+/// editable native alpha in versions whose opacity records we understand.
+/// The live effect stack itself cannot be reconstructed from that alpha.
+fn native_solid_transparency_alpha(shape: &Shape, version: u16) -> Option<f64> {
+    use tracedraw_core::live::{Effect, MergeMode};
+    if (13..=15).contains(&version)
+        || shape.opacity_mask.is_some()
+        || !shape.opacity.is_finite()
+        || shape.effects.len() != 1
+        || !matches!(
+            &shape.kind,
+            ShapeKind::Rect { .. }
+                | ShapeKind::Ellipse { .. }
+                | ShapeKind::Path { .. }
+                | ShapeKind::Polygon { .. }
+        )
+    {
+        return None;
+    }
+    match shape.effects.first()? {
+        Effect::Transparency {
+            mask: Fill::Solid(color),
+            merge: MergeMode::Normal,
+            target: 2,
+        } => Some(
+            (shape.opacity.clamp(0.0, 1.0) * f64::from(color.luminance()))
+                .clamp(0.0, 1.0),
+        ),
+        _ => None,
+    }
+}
+
 /// Only a single simple two-stop transparency can be represented by
 /// the known version-16+ style-string layout without dropping editable
 /// stops, repeats, stacking or blend semantics.
@@ -179,8 +212,12 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
         "native invert lens layout is unverified in this CDR version";
     const GRADIENT: &str =
         "complex transparency masks are approximated by uniform opacity";
+    const UNIFORM: &str =
+        "solid transparency effect is converted to editable object opacity, not retained as a live effect";
+    const ALPHA: &str =
+        "uniform opacity cannot be reliably written in CDR versions 13-15";
 
-    let mut found = [false; 8];
+    let mut found = [false; 10];
     let mut pending: Vec<&Shape> = doc.pages.iter()
         .flat_map(|page| page.layers.iter())
         .flat_map(|layer| layer.shapes.iter())
@@ -201,6 +238,8 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
                 if version != 15 {
                     found[6] = true;
                 }
+            } else if native_solid_transparency_alpha(shape, version).is_some() {
+                found[8] = true;
             } else if native_simple_gradient_mask(shape, version).is_none() {
                 found[2] = true;
             }
@@ -214,6 +253,12 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
             {
                 found[7] = true;
             }
+        }
+        if (13..=15).contains(&version)
+            && (shape.opacity < 0.999 || shape.effects.iter().any(|effect|
+                matches!(effect, tracedraw_core::live::Effect::Transparency { .. })))
+        {
+            found[9] = true;
         }
         if shape.opacity_mask.is_some() {
             found[4] = true;
@@ -241,7 +286,10 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
             _ => {}
         }
     }
-    [FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK, EXPERIMENTAL, LENS, GRADIENT]
+    [
+        FRAME, HIDDEN, EFFECTS, PARAGRAPH, MASK,
+        EXPERIMENTAL, LENS, GRADIENT, UNIFORM, ALPHA,
+    ]
         .into_iter()
         .zip(found)
         .filter_map(|(note, present)| present.then_some(note))
@@ -3571,6 +3619,12 @@ impl<'a> Writer<'a> {
                 let result = self.object(&base, centre, depth + 1);
                 self.graded.remove(&base.id);
                 return result;
+            }
+            if let Some(alpha) = native_solid_transparency_alpha(s, self.v.0) {
+                let mut base = s.clone();
+                base.effects.clear();
+                base.opacity = alpha;
+                return self.object(&base, centre, depth + 1);
             }
             let ev = tracedraw_core::live::evaluate(s);
             let mut all: Vec<Shape> = ev.below.clone();
