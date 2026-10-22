@@ -2178,6 +2178,68 @@ mod tests {
     }
 
     #[test]
+    fn crossing_circles_exclude_preserves_two_editable_crescents() {
+        use crate::geometry::Shape as _;
+        let a = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let b = crate::geometry::Circle::new((8.0, 0.0), 10.0).to_path(0.01);
+        let parts = exact_curve_crossing(&a, &b, Op::Exclude)
+            .expect("two transverse circle crossings should produce two crescents");
+        assert_eq!(parts.len(), 2);
+        let combined = join_exact_paths(&parts);
+        assert!(combined.contains(Point::new(-8.0, 0.0)));
+        assert!(combined.contains(Point::new(16.0, 0.0)));
+        assert!(!combined.contains(Point::new(4.0, 0.0)));
+        assert!(parts.iter().all(|part| part.elements().iter()
+            .any(|el| matches!(el, PathEl::CurveTo(_, _, _)))));
+        assert_eq!(overlay(&a, &b, Op::Exclude).elements(), combined.elements());
+        assert_eq!(overlay_parts(&a, &b, Op::Exclude).len(), 2);
+    }
+
+    #[test]
+    fn crossing_circle_and_rectangle_exclude_retains_curve_segments() {
+        use crate::geometry::Shape as _;
+        let circle = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
+        let rect = Rect::new(-5.0, -15.0, 3.0, 15.0).to_path(0.01);
+        let parts = exact_curve_crossing(&circle, &rect, Op::Exclude)
+            .expect("transverse curve-line crossings should yield XOR");
+        let result = join_exact_paths(&parts);
+        assert!(result.contains(Point::new(9.0, 0.0)));
+        assert!(result.contains(Point::new(0.0, 12.0)));
+        assert!(!result.contains(Point::new(0.0, 0.0)));
+        assert!(result.elements().iter()
+            .any(|el| matches!(el, PathEl::CurveTo(_, _, _))));
+        assert!(matches_boolean_fill(&circle, &rect, &result, Op::Exclude));
+        assert_eq!(
+            overlay(&circle, &rect, Op::Exclude).elements(),
+            result.elements()
+        );
+    }
+
+    #[test]
+    fn shared_straight_edge_falls_back_without_guessing_xor_topology() {
+        let a = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01);
+        let b = Rect::new(5.0, 0.0, 15.0, 10.0).to_path(0.01);
+        assert!(exact_curve_crossing(&a, &b, Op::Exclude).is_none());
+        assert!(exact_curve_crossing(&a, &b, Op::Trim).is_none());
+        let result = overlay(&a, &b, Op::Exclude);
+        assert!(result.contains(Point::new(2.0, 5.0)));
+        assert!(result.contains(Point::new(12.0, 5.0)));
+        assert!(!result.contains(Point::new(7.0, 5.0)));
+    }
+
+    #[test]
+    fn shared_vertices_and_reversed_curves_are_ambiguous_crossings() {
+        use crate::geometry::Shape as _;
+        let one = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01);
+        let two = Rect::new(10.0, 10.0, 20.0, 20.0).to_path(0.01);
+        assert!(exact_curve_crossing(&one, &two, Op::Weld).is_none());
+        let c = crate::geometry::Circle::new((0.0, 0.0), 12.0).to_path(0.01);
+        let reversed = reverse_closed_contour(&c).expect("simple curve");
+        assert!(exact_curve_crossing(&c, &reversed, Op::Exclude).is_none());
+        assert!(exact_curve_crossing(&c, &reversed, Op::Weld).is_none());
+    }
+
+    #[test]
     fn two_crossing_cubic_circles_keep_editable_segments() {
         use crate::geometry::Shape as _;
         let a = crate::geometry::Circle::new((0.0, 0.0), 10.0).to_path(0.01);
