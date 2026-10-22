@@ -19,6 +19,25 @@ equivalent `W*` clipping operator. The frame's cubic curves stay vector.
 Opacity masks are a separate mode and do not use the normal hard-clip
 export path. They retain the format-specific behavior described below.
 
+## Native CDR clipping (experimental)
+
+The writer now builds a `LIST clpt` with separately numbered groups
+and an `8005` reference on a supported frame's vector object.
+Supported frames are closed, visible rectangles, ellipses, polygons
+or Bézier paths without live frame effects. Nested contents remain
+ordinary editable objects. A single cropped bitmap continues using
+the established bitmap crop encoding.
+
+The available public-format and fixture evidence confirms the
+`clpt` layout for version 12 only. For modern CDR versions, the
+writer uses the same records provisionally; independent applications
+have not confirmed round-trip support. Unsupported/open frames still
+degrade to an unclipped group. The SVG and PDF exporters have their
+own hard-clip handling independent of this CDR support.
+
+Tests for multi-container references, Bézier frames, object names and
+editable contents have been committed but not executed.
+
 ## Commands
 
 - Place Inside Frame: with contents selected, click the frame; the
