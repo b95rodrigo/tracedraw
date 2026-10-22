@@ -2337,6 +2337,55 @@ fn generated_contours_block_shadows_and_extrusions_remain_editable_groups() {
 }
 
 #[test]
+fn deeply_nested_vector_effects_do_not_disappear_when_group_depth_is_exhausted() {
+    use tracedraw_core::live::Effect;
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 35.0, 35.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.fill = Fill::Solid(Color::rgb8(200, 40, 20));
+    shape.effects.push(Effect::BlockShadow {
+        offset: tracedraw_core::geometry::Vec2::new(5.0, -4.0),
+        color: Color::BLACK,
+        gap: 0.0,
+    });
+    // The effect is reached at depth 59. Flat expansion fits the
+    // established writer budget (depth 60); an extra group does not.
+    for _ in 0..59 {
+        let mut group = Shape::new(
+            ids.shape(),
+            ShapeKind::Group { children: vec![shape] },
+        );
+        group.fill = Fill::None;
+        group.stroke = None;
+        shape = group;
+    }
+    let doc = doc_with(vec![shape]);
+    let bytes = document_to_cdr_version(&doc, 21);
+    let (back, report) = crate::open_bytes(&bytes, "nested-effect")
+        .expect("open deeply nested CDR output");
+    assert_eq!(report.skipped_objects, 0, "{:?}", report.warnings);
+    let mut pending: Vec<&Shape> = back.pages[0].layers[0].shapes.iter().collect();
+    let mut vector_leaves = 0usize;
+    while let Some(part) = pending.pop() {
+        match &part.kind {
+            ShapeKind::Group { children } => pending.extend(children.iter()),
+            ShapeKind::Rect { .. } | ShapeKind::Path { .. }
+                | ShapeKind::Ellipse { .. } | ShapeKind::Polygon { .. } => {
+                vector_leaves += 1;
+            }
+            other => panic!("unexpected nested CDR effect part {other:?}"),
+        }
+    }
+    assert_eq!(vector_leaves, 2, "source rectangle and vector block shadow survive");
+}
+
+#[test]
 fn expanded_vector_grouping_rejects_single_shapes_and_non_vector_children() {
     use tracedraw_core::live::Effect;
     let mut ids = tracedraw_core::id::IdSource::default();

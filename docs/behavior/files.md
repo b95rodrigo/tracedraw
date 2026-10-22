@@ -92,7 +92,9 @@ one normal editable group instead of scattering them across the layer.
 The visual stacking of the components is maintained. Their individual
 paths and fills remain editable, but the original live contour, shadow
 or extrusion parameters cannot be reconstructed from the CDR group.
-Mixed/raster pieces keep the previous fallback.
+Mixed/raster pieces keep the previous fallback. Very deeply nested
+objects also use the flat fallback if adding a group would exceed the
+writer's depth limit, avoiding accidental loss of generated shapes.
 Uniform opacity in versions 13-15 is not reliably writable with the
 known records, so an explicit warning is shown before relying on such
 files. More complicated gradient masks
