@@ -24,7 +24,7 @@ features.md says `works`. Do not infer percentages from the inventory totals.
 
 | ID | Priority | Workflow | Required verification | Current evidence |
 |---|---|---|---|---|
-| VEC-01 | P0 | Union, trim, intersection of curves | Preserve editable cubic segments, small node count, holes and correct topology | **In progress**: separated/nested/identical paths, non-overlapping Simplify and simple curve/straight-edge crossings preserve original curves; curve/curve crossings and ambiguous topology still flatten |
+| VEC-01 | P0 | Union, trim, intersection of curves | Preserve editable cubic segments, small node count, holes and correct topology | **Experimental, unverified**: simple isolated curve/curve intersections now have a bounded parametric implementation; tangencies, overlap, XOR and complex topology still fall back to flattened polygons |
 | VEC-02 | P0 | Select, move, resize and rotate grouped objects | Pointer/keyboard modifiers, nesting, correct hit testing and a single undo step | **Open**: interaction reports need reproduction |
 | VEC-03 | P0 | Edit a clipping frame and its contents | Frame styling, selection and edits inside the frame, undo and save | **Open**: real-file/browser issue |
 | VEC-04 | P0 | Pan, zoom and select on a dense document | Benchmark p50/p95 for navigation and render latency, on-screen correctness | **Open**: reported slow interactions |
