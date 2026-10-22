@@ -2299,6 +2299,43 @@ fn geometric_deformation_and_solid_alpha_keep_vector_output() {
 }
 
 #[test]
+fn stacked_transparency_effects_are_not_collapsed_with_deformation() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut shape = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 40.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    shape.effects = vec![
+        Effect::Perspective {
+            corners: [
+                Point::new(0.0, 0.0), Point::new(40.0, 0.0),
+                Point::new(40.0, 30.0), Point::new(0.0, 30.0),
+            ],
+        },
+        Effect::Transparency {
+            mask: Fill::Solid(Color::Gray { v: 0.5 }),
+            merge: MergeMode::Normal,
+            target: 2,
+        },
+        Effect::Transparency {
+            mask: Fill::Solid(Color::Gray { v: 0.5 }),
+            merge: MergeMode::Normal,
+            target: 2,
+        },
+    ];
+    assert!(native_deformation_with_solid_alpha(&shape, 27).is_none());
+    let notes = export_fidelity_notes(&doc_with(vec![shape]), 27);
+    assert!(notes.iter().any(|n| n.contains("expanded")), "{notes:?}");
+    assert!(!notes.iter().any(|n| n.contains("geometric deformation")),
+        "{notes:?}");
+}
+
+#[test]
 fn shadow_plus_solid_alpha_is_not_falsely_marked_geometry_only() {
     use tracedraw_core::live::{Effect, MergeMode};
     let mut ids = tracedraw_core::id::IdSource::default();
