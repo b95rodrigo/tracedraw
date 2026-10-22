@@ -66,9 +66,18 @@ without its hard clipping semantics. Certain live effects and advanced
 text features can also differ after reopening. Prefer `.tdraw` to retain
 a fully editable original while interoperability is being improved.
 
-Source regression tests for nested metadata, style-string escaping
-and compound editable Bézier paths are committed but unexecuted.
-Opening the written file in an independent program remains a release gate.
+For known lossy constructs, saving a CDR file now appends a "CDR
+warning" to the status line and writes the details to the application
+log. This does not block the save. It currently warns about non-bitmap
+clipping frames, hidden objects omitted by the target version, expanded
+live effects, paragraph text frame conversion and opacity mask
+limitations. These source-based warnings are **not exhaustive**; absence
+of a warning does not mean the file has been independently verified.
+
+Source regression tests for nested metadata, style-string escaping,
+compound editable Bézier paths and loss notices are committed but
+unexecuted. Opening the written file in an independent program remains
+a release gate.
 
 ## `.cdr` versions
 

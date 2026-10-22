@@ -4666,6 +4666,17 @@ impl App {
     pub(crate) fn save_to(&mut self, path: PathBuf) {
         // Time counted for the active task goes into the file too.
         self.flush_tracked_time();
+        // A successful write does not imply that all editable CDR
+        // structures were retained. Surface known loss cases in the
+        // status line rather than silently claiming full fidelity.
+        let cdr_fidelity_notes = if is_cdr_path(&path) {
+            tracedraw_cdr::write::export_fidelity_notes(
+                self.engine.document(),
+                self.cdr_save_version(),
+            )
+        } else {
+            Vec::new()
+        };
         let bytes = if is_cdr_path(&path) {
             let doc = self.engine.document();
             let changed;
@@ -4716,6 +4727,11 @@ impl App {
                 self.file = Some(path.clone());
                 self.status =
                     crate::i18n::trf("status.saved", &[("p", &path.display().to_string())]);
+                if !cdr_fidelity_notes.is_empty() {
+                    let detail = cdr_fidelity_notes.join("; ");
+                    log::warn!("CDR save fidelity notice for {}: {detail}", path.display());
+                    self.status.push_str(&format!(" | CDR warning: {detail}"));
+                }
                 self.settings.touch_recent(&path);
                 self.settings.save();
                 self.store_thumbnail(&path);
