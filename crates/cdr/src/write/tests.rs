@@ -12,6 +12,25 @@ fn doc_with(shapes: Vec<Shape>) -> Document {
 }
 
 #[test]
+fn text_style_font_family_escapes_json_control_characters() {
+    let name = "Quote \" Slash \\ Tab \t Line \n Control \u{0001}";
+    let span = TextSpan::new("word", name, 12.0);
+    let style = run_style_json(&span, None);
+    let escaped = json_string_contents(name);
+
+    assert!(escaped.contains("\\\""), "{escaped}");
+    assert!(escaped.contains("\\\\"), "{escaped}");
+    assert!(escaped.contains("\\t"), "{escaped}");
+    assert!(escaped.contains("\\n"), "{escaped}");
+    assert!(escaped.contains("\\u0001"), "{escaped}");
+    assert!(!style.contains('\n'), "{style}");
+    assert!(!style.contains('\t'), "{style}");
+    assert!(!style.contains('\u{0001}'), "{style}");
+    assert!(style.contains(&format!("\"font\":\"{escaped}\"")), "{style}");
+    assert_eq!(style.matches("\"font\":").count(), 3);
+}
+
+#[test]
 fn nested_clip_frame_metadata_lists_text_fonts_and_object_names() {
     use std::io::Read;
     let mut doc = doc_with(Vec::new());
