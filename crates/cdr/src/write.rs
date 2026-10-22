@@ -123,6 +123,8 @@ pub fn export_fidelity_notes(doc: &Document, version: u16) -> Vec<&'static str> 
                     && contents[0].effects.is_empty();
                 let native_vector = version >= 12
                     && !contents.is_empty()
+                    && shape.opacity >= 0.999
+                    && shape.opacity_mask.is_none()
                     && native_clip_frame_shape(frame);
                 if !bitmap_crop && !native_vector {
                     found[0] = true;
@@ -3517,6 +3519,8 @@ impl<'a> Writer<'a> {
                 let native = v.0 >= 12
                     && depth < 55
                     && !contents.is_empty()
+                    && s.opacity >= 0.999
+                    && s.opacity_mask.is_none()
                     && native_clip_frame_shape(frame);
                 if native {
                     let mut children: Vec<Shape> = contents.to_vec();
