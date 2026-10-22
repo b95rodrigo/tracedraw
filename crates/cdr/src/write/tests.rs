@@ -4,6 +4,73 @@ use tracedraw_core::{
     geometry::Size,
 };
 
+#[test]
+fn cdr_export_loss_notes_flag_non_bitmap_clips_and_hidden_objects() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let frame = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 80.0, 80.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    let inner = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    let clipped = Shape::new(
+        ids.shape(),
+        ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents: vec![inner],
+        },
+    );
+    let mut hidden = Shape::new(
+        ids.shape(),
+        ShapeKind::Rect {
+            rect: Rect::new(1.0, 1.0, 2.0, 2.0),
+            radius: 0.0,
+            corners: None,
+        },
+    );
+    hidden.visible = false;
+
+    let doc = doc_with(vec![clipped, hidden]);
+    let old = export_fidelity_notes(&doc, 14);
+    assert!(old.iter().any(|n| n.contains("clipping")), "{old:?}");
+    assert!(old.iter().any(|n| n.contains("hidden")), "{old:?}");
+    let current = export_fidelity_notes(&doc, 27);
+    assert!(current.iter().any(|n| n.contains("clipping")), "{current:?}");
+    assert!(!current.iter().any(|n| n.contains("hidden")), "{current:?}");
+
+    let doc = doc_with(Vec::new());
+    assert!(export_fidelity_notes(&doc, 27).is_empty());
+}
+
+#[test]
+fn cdr_export_loss_notes_flag_paragraph_frames() {
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let frame = Shape::new(
+        ids.shape(),
+        ShapeKind::Text {
+            spans: vec![TextSpan::new("Multi-line", "Arial", 12.0)],
+            origin: Point::new(5.0, 25.0),
+            frame: Some(Rect::new(0.0, 0.0, 60.0, 40.0)),
+            align: TextAlign::Left,
+            para: ParagraphStyle::default(),
+            on_path: None,
+        },
+    );
+    let doc = doc_with(vec![frame]);
+    let notes = export_fidelity_notes(&doc, 27);
+    assert!(notes.iter().any(|n| n.contains("paragraph text")), "{notes:?}");
+}
+
 fn doc_with(shapes: Vec<Shape>) -> Document {
     let mut doc = Document::new("w", Size::new(200.0, 100.0));
     doc.pages[0].layers[0].name = "Ink".into();
