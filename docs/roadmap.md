@@ -30,7 +30,10 @@ for evidence-based acceptance before calling a version reliable.
    A single native invert lens now has a source encoder based on an
    observed version-15 record; other versions remain unverified.
    Two-stop gradient transparency uses the source-supported native
-   style path, while complex masks fall back with visible warnings.
+   style path. Solid masks on fill and outline use native object alpha in
+   v7-12 and v16+, while v13-15 now warn about unreliable opacity.
+   Complex gradient masks fall back to a stop-weighted mean with a
+   visible notice; accurate live mask preservation remains open.
    Independently inspect recent CDR files, complex text, ICC profiles,
    separations and PDF/X.
 
